@@ -171,3 +171,111 @@ optimizer = optim.Adam(
                     weight_decay=WEIGHT_DECAY
                     
                     )
+scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    optimizer,
+    mode='max',
+    factor=0.5,
+    patience=3
+)
+
+# -=-=-=-=-=-=- CSV Logging -=-=-=-=-=-=-
+
+import csv
+from tqdm import tqdm
+
+CSV_PATH = os.path.join(sys.path[0], 'trainingV2_log.csv')
+
+with open(CSV_PATH, 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc'])
+
+best_val_acc = 0.0
+
+# -=-=-=-=-=-=- Training Loop -=-=-=-=-=-=-
+
+for epoch in range(1, NUM_EPOCHS+1):
+    
+    model.train()
+    t_loss = t_correct = t_total = 0
+
+    train_bar = tqdm(train_loader,
+                     desc=f"Epoch {epoch}/{NUM_EPOCHS} [Train]",
+                     unit='batch')
+    
+    for imgs, labels in train_bar:
+
+        imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
+        optimizer.zero_grad()
+        out = model(imgs)
+
+        loss = criterion(out, labels)
+        loss.backward()
+
+        optimizer.step()
+
+        t_loss    += loss.item() * imgs.size(0)
+        preds      = out.argmax(1)
+        t_correct += (preds == labels).sum().item()
+        t_total   += labels.size(0)
+
+        train_bar.set_postfix({
+            'loss': f"{t_loss/t_total:.4f}",
+            'acc':  f"{100.*t_correct/t_total:.2f}%"
+        })
+
+    train_loss = t_loss / t_total
+    train_acc  = 100. * t_correct / t_total
+
+    # — Validation —
+
+    model.eval()
+
+    v_loss = v_correct = v_total = 0
+    val_bar = tqdm(val_loader,
+                   desc=f"Epoch {epoch}/{NUM_EPOCHS} [  Val ]",
+                   unit='batch')
+    
+    with torch.no_grad():
+
+        for imgs, labels in val_bar:
+
+            imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
+            out = model(imgs)
+            loss = criterion(out, labels)
+
+            v_loss    += loss.item() * imgs.size(0)
+            preds      = out.argmax(1)
+            v_correct += (preds == labels).sum().item()
+            v_total   += labels.size(0)
+
+            val_bar.set_postfix({
+                'loss': f"{v_loss/v_total:.4f}",
+                'acc':  f"{100.*v_correct/v_total:.2f}%"
+            })
+
+    val_loss = v_loss / v_total
+    val_acc  = 100. * v_correct / v_total
+
+    # — Log to CSV —
+    with open(CSV_PATH, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            epoch,
+            f"{train_loss:.4f}", f"{train_acc:.2f}",
+            f"{val_loss:.4f}",   f"{val_acc:.2f}"
+        ])
+
+    # — Check for best model & save/download if improved —
+
+    if val_acc > best_val_acc:
+        best_val_acc = val_acc
+        torch.save(model.state_dict(), BEST_MODEL_PATH)
+        tqdm.write(f"🏆 New best model @ epoch {epoch} — Val Acc: {val_acc:.2f}%")
+        if FileLink:
+            display(FileLink(BEST_MODEL_PATH))
+
+    # — Step scheduler —
+    
+    scheduler.step(val_acc)
+
+print(f"Training complete. Best Val Acc: {best_val_acc:.2f}%")
