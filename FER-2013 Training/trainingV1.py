@@ -9,6 +9,7 @@ from tqdm import tqdm
 import csv
 
 # ========== Configuration ==========
+
 ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
 TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
 VAL_DIR         = os.path.join(ROOT_DIR, 'test')
@@ -25,6 +26,7 @@ PATIENCE = 7
 
 # ========== Data Augmentation & Transforms ==========
 train_transform = transforms.Compose([
+
     transforms.Grayscale(1),
     transforms.Resize((64, 64)),
     transforms.RandomResizedCrop(48, scale=(0.75, 1.0)),
@@ -34,8 +36,11 @@ train_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,)),
     transforms.RandomErasing(p=0.5, scale=(0.02, 0.15), ratio=(0.3, 3.3)),
+
 ])
+
 val_transform = transforms.Compose([
+
     transforms.Grayscale(1),
     transforms.Resize((48, 48)),
     transforms.ToTensor(),
@@ -43,6 +48,7 @@ val_transform = transforms.Compose([
 ])
 
 # ========== DataLoaders ==========
+
 train_ds = datasets.ImageFolder(TRAIN_DIR, transform=train_transform)
 val_ds   = datasets.ImageFolder(VAL_DIR,   transform=val_transform)
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
@@ -61,13 +67,18 @@ class SEBlock(nn.Module):
             nn.Sigmoid()
         )
     def forward(self, x):
+
         w = self.fc(x).unsqueeze(-1).unsqueeze(-1)
         return x * w
 
 class ResidualSEBlock(nn.Module):
+
     def __init__(self, in_ch, out_ch, downsample=False):
+
         super().__init__()
+
         stride = 2 if downsample else 1
+        
         self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
         self.bn1   = nn.BatchNorm2d(out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
