@@ -1,284 +1,211 @@
-
-import os
-import sys
-import argparse
-import csv
-from collections import Counter
-from multiprocessing import freeze_support
-
+import os, sys, csv
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, models
+from tqdm import tqdm
 
-# ─── Spatial Attention ─────────────────────────────────────────────────────────
-class SpatialAttention(nn.Module):
-    def __init__(self, kernel_size: int = 7):
-        super().__init__()
-        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
-    def forward(self, x):
-        avg_out = x.mean(dim=1, keepdim=True)
-        max_out, _ = x.max(dim=1, keepdim=True)
-        attn = torch.sigmoid(self.conv(torch.cat([avg_out, max_out], dim=1)))
-        return x * attn
+# ========== Configuration ==========
+ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
+TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
+VAL_DIR         = os.path.join(ROOT_DIR, 'test')
+CSV_PATH        = os.path.join(sys.path[0], 'validation_accuracy.csv')
+BEST_MODEL_PATH = os.path.join(sys.path[0], 'best_model.pth')
 
-# ─── FER Model ────────────────────────────────────────────────────────────────
-class FERModel(nn.Module):
-    def __init__(self, num_classes: int):
-        super().__init__()
-        # Load pretrained VGG16-BN
-        vgg = models.vgg16_bn(pretrained=True)
-        # Replace first conv to accept 1-channel input
-        orig = vgg.features[0]
-        new0 = nn.Conv2d(1, orig.out_channels,
-                         kernel_size=orig.kernel_size,
-                         stride=orig.stride,
-                         padding=orig.padding,
-                         bias=(orig.bias is not None))
-        # Sum weights over original 3 channels
-        new0.weight.data = orig.weight.data.sum(dim=1, keepdim=True)
-        vgg.features[0] = new0
+BATCH_SIZE    = 128
+NUM_EPOCHS    = 30
+LEARNING_RATE = 1e-3
+PATIENCE      = 5  # quicker early-stop if no gain
 
-        # Freeze early layers, fine-tune from layer4 onward
-        for name, param in vgg.features.named_parameters():
-            layer_idx = int(name.split('.')[0])
-            param.requires_grad = (layer_idx >= 24)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.features = vgg.features
-        self.attn     = SpatialAttention(kernel_size=7)
-        self.pool     = nn.AdaptiveAvgPool2d((1,1))
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(256, num_classes)
-            # raw logits here! Softmax is in loss
-        )
+# ========== MixUp Utility ==========
+def mixup_data(x, y, alpha=0.4):
+    if alpha > 0:
+        lam = torch._sample_dirichlet(torch.tensor([alpha, alpha]))[0].item()
+    else:
+        lam = 1
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(DEVICE)
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
 
-    def forward(self, x):
-        x = self.features(x)
-        x = self.attn(x)
-        x = self.pool(x)
-        return self.classifier(x)
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
-# ─── Focal Loss (optional) ────────────────────────────────────────────────────
+# ========== Data Augmentation & Transforms ==========
+train_transform = transforms.Compose([
+    transforms.Grayscale(1),
+    transforms.Resize((64, 64)),
+    transforms.RandomResizedCrop(48, scale=(0.8, 1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(15),
+    transforms.ColorJitter(0.2, 0.2, 0.2),
+    transforms.GaussianBlur(3),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,)),
+])
+
+val_transform = transforms.Compose([
+    transforms.Grayscale(1),
+    transforms.Resize((48, 48)),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,)),
+])
+
+# ========== Datasets & Loaders ==========
+train_ds = datasets.ImageFolder(TRAIN_DIR, transform=train_transform)
+val_ds   = datasets.ImageFolder(VAL_DIR,   transform=val_transform)
+
+# Compute per-class weights to counter imbalance
+counts = torch.tensor([c for _, c in train_ds.class_to_idx.items()])
+class_sample_counts = torch.tensor([sum([1 for _, label in train_ds if label==i])
+                                    for i in range(len(train_ds.classes))])
+class_weights = 1. / (class_sample_counts.float() + 1e-6)
+class_weights = class_weights / class_weights.sum() * len(train_ds.classes)
+
+train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=4, pin_memory=True)
+val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+
+# ========== Model: Pretrained ResNet-18 ==========
+model = models.resnet18(pretrained=True)
+# adapt first conv to accept 1-channel
+model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+# replace classifier
+num_ftrs = model.fc.in_features
+model.fc = nn.Sequential(
+    nn.Linear(num_ftrs, 128, bias=False),
+    nn.BatchNorm1d(128),
+    nn.ReLU(inplace=True),
+    nn.Dropout(0.5),
+    nn.Linear(128, len(train_ds.classes))
+)
+model = model.to(DEVICE)
+
+# ========== Loss, Optimizer, Scheduler ==========
+# criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE),
+#                                 label_smoothing=0.1)
+# OR for extra hard-sample focus, uncomment FocalLoss:
 class FocalLoss(nn.Module):
-    def __init__(self, gamma: float = 2.0, weight=None, reduction='mean'):
+    def __init__(self, gamma=2.0, weight=None):
         super().__init__()
         self.gamma = gamma
-        self.ce    = nn.CrossEntropyLoss(weight=weight, reduction='none')
-        self.reduction = reduction
+        self.ce = nn.CrossEntropyLoss(weight=weight, reduction='none')
+    def forward(self, logits, targets):
+        logpt = -self.ce(logits, targets)
+        pt = logpt.exp()
+        return ((-((1 - pt)**self.gamma) * logpt)).mean()
 
-    def forward(self, inputs, targets):
-        logp = -self.ce(inputs, targets)
-        p = logp.exp()
-        loss = -((1 - p) ** self.gamma) * logp
-        if self.reduction=='mean':
-            return loss.mean()
-        elif self.reduction=='sum':
-            return loss.sum()
-        else:
-            return loss
+criterion = FocalLoss(gamma=2.0,
+                     weight=class_weights.to(DEVICE))
 
-# ─── Training / Validation loops ──────────────────────────────────────────────
-def train_one_epoch(model, loader, criterion, optimizer, device, scaler, clip_grad):
+optimizer = optim.AdamW(model.parameters(),
+                        lr=LEARNING_RATE,
+                        weight_decay=1e-4)
+
+total_steps = NUM_EPOCHS * len(train_loader)
+scheduler = optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=LEARNING_RATE,
+    total_steps=total_steps,
+    pct_start=0.3,
+    anneal_strategy='cos'
+)
+
+# ========== Logging & Early Stopping ==========
+best_val_acc = 0.0
+no_improve   = 0
+
+with open(CSV_PATH, 'w', newline='') as f:
+    csv.writer(f).writerow([
+        'epoch', 'train_loss', 'train_acc',
+        'val_loss',  'val_acc'
+    ])
+
+# ========== Training Loop ==========
+for epoch in range(1, NUM_EPOCHS + 1):
     model.train()
-    running_loss = 0.0
-    running_corrects = 0
-    total = 0
+    t_loss = t_correct = t_total = 0
+    train_bar = tqdm(train_loader, desc=f"[{epoch}/{NUM_EPOCHS}] Train")
 
-    for images, labels in loader:
-        images, labels = images.to(device), labels.to(device)
+    for imgs, labels in train_bar:
+        imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
+
+        # apply MixUp
+        imgs, targets_a, targets_b, lam = mixup_data(imgs, labels, alpha=0.4)
+
         optimizer.zero_grad()
-
-        with torch.cuda.amp.autocast(enabled=(scaler is not None)):
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
-        if scaler:
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-            optimizer.step()
-
-        preds = outputs.argmax(dim=1)
-        running_loss += loss.item() * images.size(0)
-        running_corrects += (preds == labels).sum().item()
-        total += labels.size(0)
-
-    epoch_loss = running_loss / total
-    epoch_acc  = running_corrects / total
-    return epoch_loss, epoch_acc
-
-def validate_one_epoch(model, loader, criterion, device):
-    model.eval()
-    running_loss = 0.0
-    running_corrects = 0
-    total = 0
-
-    with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            preds = outputs.argmax(dim=1)
-            running_loss += loss.item() * images.size(0)
-            running_corrects += (preds == labels).sum().item()
-            total += labels.size(0)
-
-    epoch_loss = running_loss / total
-    epoch_acc  = running_corrects / total
-    return epoch_loss, epoch_acc
-
-# ─── Main ─────────────────────────────────────────────────────────────────────
-def main():
-    parser = argparse.ArgumentParser(description="Train FER-2013 with improved script")
-    parser.add_argument('--data-dir', type=str, required=True,
-                        help="Root folder with `train/` and `test/` subdirs")
-    parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--weight-decay', type=float, default=1e-4)
-    parser.add_argument('--num-workers', type=int, default=4)
-    parser.add_argument('--early-stop-patience', type=int, default=7)
-    parser.add_argument('--use-focal-loss', action='store_true',
-                        help="Use Focal Loss instead of standard CrossEntropyLoss")
-    parser.add_argument('--label-smoothing', type=float, default=0.1,
-                        help="Label smoothing factor (0 means no smoothing)")
-    parser.add_argument('--mixed-precision', action='store_true',
-                        help="Enable mixed-precision training")
-    
-    parser.add_argument('--grad-clip', type=float, default=2.0)
-    parser.add_argument('--log-dir', type=str, default='logs')
-    args = parser.parse_args()
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    os.makedirs(args.log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=args.log_dir)
-
-    # ── Transforms ────────────────────────────────────────────────────────────────
-    
-    train_tf = transforms.Compose([
-        transforms.Grayscale(1),
-        transforms.Resize((48,48)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.RandomAffine(degrees=0,
-                                translate=(0.1,0.1),
-                                scale=(0.9,1.1)),
-        transforms.ColorJitter(0.2,0.2),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-        transforms.RandomErasing(p=0.5, scale=(0.02,0.15), ratio=(0.3,3.3))
-    ])
-    val_tf = transforms.Compose([
-        transforms.Grayscale(1),
-        transforms.Resize((48,48)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,))
-    ])
-
-    # ── Datasets & Sampler ───────────────────────────────────────────────────────
-    train_ds = datasets.ImageFolder(os.path.join(args.data_dir, 'train'),
-                                    transform=train_tf)
-    
-    val_ds   = datasets.ImageFolder(os.path.join(args.data_dir, 'test'),
-                                    transform=val_tf)
-
-    # compute class weights
-    counts = Counter([y for _, y in train_ds.samples])
-    cls_weights = [1.0 / counts[i] for i in range(len(counts))]
-    sample_weights = [cls_weights[y] for _, y in train_ds.samples]
-    sampler = WeightedRandomSampler(sample_weights,
-                                    num_samples=len(sample_weights),
-                                    replacement=True)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size,
-                              sampler=sampler, num_workers=args.num_workers,
-                              pin_memory=True)
-    val_loader   = DataLoader(val_ds, batch_size=args.batch_size,
-                              shuffle=False, num_workers=args.num_workers,
-                              pin_memory=True)
-
-    # ── Model, Loss, Optimizer, Scheduler ───────────────────────────────────────
-    model = FERModel(num_classes=len(counts)).to(device)
-
-    if args.use_focal_loss:
-        loss_fn = FocalLoss(gamma=2.0,
-                            weight=torch.tensor(cls_weights).to(device))
-    else:
-        loss_fn = nn.CrossEntropyLoss(
-            weight=torch.tensor(cls_weights).to(device),
-            label_smoothing=args.label_smoothing
-        )
-
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                           lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-
-    scaler = torch.cuda.amp.GradScaler() if args.mixed_precision else None
-
-    # ── CSV logging setup ────────────────────────────────────────────────────────
-    csv_path = os.path.join(args.log_dir, 'training_log.csv')
-    with open(csv_path, 'w', newline='') as f:
-        writer_csv = csv.writer(f)
-        writer_csv.writerow(['epoch',
-                             'train_loss','train_acc',
-                             'val_loss','val_acc'])
-    best_val_acc = 0.0
-    epochs_no_improve = 0
-
-    # ── Training Loop ────────────────────────────────────────────────────────────
-    for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = train_one_epoch(
-            model, train_loader, loss_fn, optimizer,
-            device, scaler, args.grad_clip
-        )
-        val_loss,   val_acc   = validate_one_epoch(
-            model, val_loader, loss_fn, device
-        )
-
+        outputs = model(imgs)
+        loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+        loss.backward()
+        optimizer.step()
         scheduler.step()
 
-        # TensorBoard
-        writer.add_scalars('Loss', {'train': train_loss, 'val': val_loss}, epoch)
-        writer.add_scalars('Accuracy', {'train': train_acc, 'val': val_acc}, epoch)
+        t_loss += loss.item() * imgs.size(0)
+        preds = outputs.argmax(1)
+        # approximate acc for mixup (counts only the stronger label)
+        t_correct += ((lam * (preds==targets_a) + (1-lam) * (preds==targets_b))
+                      .sum().item())
+        t_total += labels.size(0)
 
-        # CSV
-        with open(csv_path, 'a', newline='') as f:
-            writer_csv = csv.writer(f)
-            writer_csv.writerow([epoch,
-                                 f"{train_loss:.4f}", f"{train_acc:.4f}",
-                                 f"{val_loss:.4f}",   f"{val_acc:.4f}"])
+        train_bar.set_postfix(
+            loss=f"{t_loss/t_total:.4f}",
+            acc =f"{100.*t_correct/t_total:.2f}%"
+        )
 
-        # Checkpointing
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            epochs_no_improve = 0
-            torch.save(model.state_dict(), os.path.join(args.log_dir, 'best_model.pth'))
-            print(f"🏆 Epoch {epoch}: new best val_acc={val_acc:.4f}")
-        else:
-            epochs_no_improve += 1
+    train_loss = t_loss / t_total
+    train_acc  = 100. * t_correct / t_total
 
-        # Early stopping
-        if epochs_no_improve >= args.early_stop_patience:
-            print(f"⏸️ Early stopping at epoch {epoch}")
+    # — Validation —
+    model.eval()
+    v_loss = v_correct = v_total = 0
+    val_bar = tqdm(val_loader, desc=f"[{epoch}/{NUM_EPOCHS}] Val  ")
+
+    with torch.no_grad():
+        for imgs, labels in val_bar:
+            imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
+            outputs = model(imgs)
+            loss = criterion(outputs, labels)
+
+            v_loss += loss.item() * imgs.size(0)
+            preds = outputs.argmax(1)
+            v_correct += (preds == labels).sum().item()
+            v_total += labels.size(0)
+
+            val_bar.set_postfix(
+                loss=f"{v_loss/v_total:.4f}",
+                acc =f"{100.*v_correct/v_total:.2f}%"
+            )
+
+    val_loss = v_loss / v_total
+    val_acc  = 100. * v_correct / v_total
+
+    # — Checkpoint & Early Stop —
+    if val_acc > best_val_acc:
+        best_val_acc = val_acc
+        no_improve = 0
+        torch.save(model.state_dict(), BEST_MODEL_PATH)
+        tqdm.write(f"🏆 New best model @ epoch {epoch}: {val_acc:.2f}%")
+    else:
+        no_improve += 1
+        if no_improve >= PATIENCE:
+            tqdm.write(f"⏸ Early stopping at epoch {epoch} (no improvement for {PATIENCE} epochs)")
             break
 
-        print(f"Epoch {epoch}/{args.epochs} "
-              f"- train_loss {train_loss:.4f} train_acc {train_acc:.4f} "
-              f"- val_loss {val_loss:.4f} val_acc {val_acc:.4f}")
+    # — Log to CSV & console —
+    with open(CSV_PATH, 'a', newline='') as f:
+        csv.writer(f).writerow([
+            epoch,
+            f"{train_loss:.4f}", f"{train_acc:.2f}",
+            f"{val_loss:.4f}",   f"{val_acc:.2f}"
+        ])
 
-    print(f"Training complete — best val_acc = {best_val_acc:.4f}")
-    writer.close()
+    tqdm.write(
+        f"[{epoch}/{NUM_EPOCHS}] "
+        f"Train ▶ loss: {train_loss:.4f}, acc: {train_acc:.2f}% | "
+        f" Val ▶ loss: {val_loss:.4f}, acc: {val_acc:.2f}%"
+    )
 
-if __name__ == "__main__":
-    freeze_support()
-    main()
+print(f"\nDone. Best Val Acc: {best_val_acc:.2f}% saved to {BEST_MODEL_PATH}")

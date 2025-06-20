@@ -15,7 +15,6 @@ TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
 VAL_DIR         = os.path.join(ROOT_DIR, 'test')
 CSV_PATH        = os.path.join(sys.path[0], 'validation_accuracy.csv')
 BEST_MODEL_PATH = os.path.join(sys.path[0], 'best_model.pth')
-
 BATCH_SIZE    = 64
 NUM_EPOCHS    = 50
 LEARNING_RATE = 1e-3
@@ -57,6 +56,7 @@ train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_wo
 val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 # ========== Custom Blocks & Model ==========
+
 class SEBlock(nn.Module):
     def __init__(self, channels, reduction=16):
 
