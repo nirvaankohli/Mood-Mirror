@@ -62,6 +62,3 @@ Many people would say that this problem can be solved relatively easily. However
 
 By acknowledging these challenges—low resolution, subtle feature differences, subjective labels, and limited data, the newer V2 can tailor both our network design and training regimen to better suit the unique demands of facial expression recognition. 
 
-#### Changes to V2
-
-    Taking this into mind I changed multiple parts of my first version some
