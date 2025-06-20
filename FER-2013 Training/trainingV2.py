@@ -10,8 +10,8 @@ from tqdm import tqdm
 ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
 TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
 VAL_DIR         = os.path.join(ROOT_DIR, 'test')
-CSV_PATH        = os.path.join(sys.path[0], 'validation_accuracy.csv')
-BEST_MODEL_PATH = os.path.join(sys.path[0], 'best_model.pth')
+CSV_PATH        = os.path.join(sys.path[0], 'V2_validation_accuracy.csv')
+BEST_MODEL_PATH = os.path.join(sys.path[0], 'V2_best_model.pth')
 
 BATCH_SIZE    = 128
 NUM_EPOCHS    = 30
