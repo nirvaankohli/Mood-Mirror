@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Real-Time Face Crop &amp; PyTorch</title>
+  <script
+    src="https://cdn.jsdelivr.net/npm/socket.io-client@4.8.1/dist/socket.io.min.js"
+    integrity="sha384-…"
+    crossorigin="anonymous">
+  </script>
+  <style>
+    #video-container { position: relative; width: 640px; height: 480px; }
+    #video, #overlay  { position: absolute; top: 0; left: 0; }
+    #overlay          { pointer-events: none; }
+    #sendCanvas       { display: none; }
+    #info {
+      margin-top: 10px;
+      font-family: sans-serif;
+      line-height: 1.4;
+    }
+    #info p {
+      margin: 0 0 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="video-container">
+    <video id="video" autoplay playsinline width="640" height="480"></video>
+    <canvas id="overlay" width="640" height="480"></canvas>
+  </div>
+  <canvas id="sendCanvas" width="640" height="480"></canvas>
+
+  <!-- Info panel -->
+  <div id="info"><em>Waiting for predictions…</em></div>
+
+  <script>
+    const socket = io();
+    socket.on('connect',        () => console.log("✅ Socket connected"));
+    socket.on('connect_error',  e => console.error("❌ Connect error:", e));
+    socket.on('error',          e => console.error("❌ Server error:", e));
+
+    const video      = document.getElementById('video');
+    const overlay    = document.getElementById('overlay');
+    const octx       = overlay.getContext('2d');
+    const sendCanvas = document.getElementById('sendCanvas');
+    const sctx       = sendCanvas.getContext('2d');
+    const infoDiv    = document.getElementById('info');
+
+    // Start webcam
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => video.play();
+      })
+      .catch(err => console.error("❌ Webcam error:", err));
+
+    // Send frame every 500ms
+    setInterval(() => {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
+        const dataURL = sendCanvas.toDataURL('image/jpeg', 0.7);
+        socket.emit('frame', dataURL);
+      }
+    }, 3000);
+
+    // Handle incoming predictions
+    socket.on('predictions', preds => {
+      console.log("📥 Received predictions:", preds);
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+
+      if (!preds.length) {
+        infoDiv.innerHTML = '<p><em>No faces detected.</em></p>';
+        return;
+      }
+
+      let html = '';
+      preds.forEach((d, i) => {
+        const [x, y, w, h] = d.box;
+
+        // draw box + label on canvas
+        octx.strokeStyle = 'red';
+        octx.lineWidth   = 2;
+        octx.strokeRect(x, y, w, h);
+        octx.fillStyle = 'red';
+        octx.font      = '16px sans-serif';
+        octx.fillText(`${d.pred_label} (${d.confidence})`, x, y - 5);
+
+        // build info panel & console log
+        html += `<p>Face ${i+1}: <strong>${d.pred_label}</strong> 
+                  (conf ${d.confidence.toFixed(4)}), box=[${x},${y},${w},${h}]</p>`;
+        console.log(
+          `Face ${i+1}: label=${d.pred_label}, ` +
+          `confidence=${d.confidence.toFixed(4)}, ` +
+          `box=[${x},${y},${w},${h}]`
+        );
+      });
+
+      infoDiv.innerHTML = html;
+    });
+  </script>
+</body>
+</html>

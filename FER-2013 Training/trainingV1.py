@@ -16,7 +16,7 @@ VAL_DIR         = os.path.join(ROOT_DIR, 'test')
 CSV_PATH        = os.path.join(sys.path[0], 'validation_accuracy.csv')
 BEST_MODEL_PATH = os.path.join(sys.path[0], 'best_model.pth')
 BATCH_SIZE    = 64
-NUM_EPOCHS    = 50
+NUM_EPOCHS    = 75
 LEARNING_RATE = 1e-3
 DEVICE        = torch.device('cpu')
 
@@ -25,6 +25,7 @@ DEVICE        = torch.device('cpu')
 PATIENCE = 7
 
 # ========== Data Augmentation & Transforms ==========
+
 train_transform = transforms.Compose([
 
     transforms.Grayscale(1),
@@ -54,6 +55,7 @@ train_ds = datasets.ImageFolder(TRAIN_DIR, transform=train_transform)
 val_ds   = datasets.ImageFolder(VAL_DIR,   transform=val_transform)
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
 val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+
 
 # ========== Custom Blocks & Model ==========
 
@@ -105,6 +107,7 @@ class ResidualSEBlock(nn.Module):
         return self.relu(out)
 
 class CustomResNet(nn.Module):
+    
     def __init__(self, num_classes=7):
           
         super().__init__()
