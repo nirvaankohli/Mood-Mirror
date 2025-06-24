@@ -13,28 +13,35 @@ from tqdm import tqdm
 
 # ——— MixUp utility ———
 def mixup_data(x, y, alpha=0.4):
+
     if alpha > 0:
+
         lam = torch._sample_dirichlet(torch.tensor([alpha, alpha]))[0].item()
     else:
         lam = 1.0
+
     idx = torch.randperm(x.size(0), device=x.device)
     mixed_x = lam * x + (1. - lam) * x[idx]
     y_a, y_b = y, y[idx]
+
     return mixed_x, y_a, y_b, lam
 
 def mixup_criterion(crit, pred, y_a, y_b, lam):
+
     return lam * crit(pred, y_a) + (1. - lam) * crit(pred, y_b)
 
 
 def main():
+
     # ——— Config ———
+
     ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
     TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
     VAL_DIR         = os.path.join(ROOT_DIR, 'test')
     CSV_PATH        = os.path.join(sys.path[0], 'V2_fer2013_val_acc.csv')
     BEST_MODEL_PATH = os.path.join(sys.path[0], 'V2_fer2013_best.pth')
 
-    BATCH_SIZE    = 128
+    BATCH_SIZE    = 64
     NUM_EPOCHS    = 50
     LR            = 1e-3
     PATIENCE      = 8
@@ -46,6 +53,7 @@ def main():
     print(f"➡️ Using device: {DEVICE}")
 
     # ——— Transforms ———
+
     train_tf = transforms.Compose([
 
         transforms.Grayscale(num_output_channels=3),
@@ -56,9 +64,10 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225]),
         transforms.RandomErasing(p=0.5, scale=(0.02,0.15), ratio=(0.3,3.3)),
-        
+
     ])
     val_tf = transforms.Compose([
+
         transforms.Grayscale(num_output_channels=3),
         transforms.Resize(64),
         transforms.CenterCrop(64),
@@ -71,6 +80,7 @@ def main():
     val_ds   = datasets.ImageFolder(VAL_DIR,   transform=val_tf)
 
     # balance classes by inverse frequency
+    3
     counts = Counter(label for _,label in train_ds.samples)
     class_w = {cls: 1.0/count for cls,count in counts.items()}
     samp_w  = [class_w[label] for _,label in train_ds.samples]
@@ -98,6 +108,7 @@ def main():
     scaler = amp.GradScaler()
 
     # ——— Logging & Early Stop ———
+
     best_acc   = 0.0
     no_improve = 0
     with open(CSV_PATH, 'w', newline='') as f:
@@ -110,6 +121,7 @@ def main():
         t_loss = t_correct = t_total = 0
         pbar = tqdm(train_loader, desc="Train", leave=False)
         for imgs, labels in pbar:
+            
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
             imgs, y_a, y_b, lam = mixup_data(imgs, labels, ALPHA)
 
