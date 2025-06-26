@@ -107,7 +107,7 @@ class ResidualSEBlock(nn.Module):
         return self.relu(out)
 
 class CustomResNet(nn.Module):
-    
+
     def __init__(self, num_classes=7):
           
         super().__init__()
@@ -124,6 +124,7 @@ class CustomResNet(nn.Module):
         self.stage3 = self._make_stage(128,256, blocks=2, downsample=True)
         self.dropout = nn.Dropout(0.5)
         self.pool    = nn.AdaptiveAvgPool2d(1)
+        
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(256, 128, bias=False),

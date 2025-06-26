@@ -8,28 +8,15 @@ import cv2
 import base64
 import numpy as np
 import torch
-from torchvision import transforms
+import torch.nn as nn
+from torchvision import transforms, models
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit
 
-from model import CustomResNet
-
 # ─── Logging setup ─────────────────────────────────────────────────────────────
-logging_csv_path = 'logging.csv'
-if not os.path.exists(logging_csv_path):
-    with open(logging_csv_path, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["timestamp", "level", "message"])
 
 def record(message: str, level: str = 'INFO'):
-    """Print and append a log message to CSV."""
-    ts = datetime.now().isoformat()
-    log_line = f"[{level}] {message}"
-    print(log_line)
-    with open(logging_csv_path, 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow([ts, level, message])
-
+    print(message)
 record("Logging initialized.")
 
 # ─── Class mapping ─────────────────────────────────────────────────────────────
@@ -59,25 +46,30 @@ if face_cascade.empty():
 record("Haar cascade loaded.")
 
 # ─── Load model ────────────────────────────────────────────────────────────────
-model = CustomResNet(num_classes=7)
-try:
-    sd = torch.load("model(V1).pth", map_location=torch.device('cpu'))
-    
-    print([k for k in sd.keys()][:5])
+NUM_CLASSES = 7
+model = models.efficientnet_b0(pretrained=False)
+in_feats = model.classifier[1].in_features
+model.classifier[1] = nn.Linear(in_feats, NUM_CLASSES)
 
+try:
+    sd = torch.load("model(V2).pth", map_location=torch.device('cpu'))
+    print("Checkpoint keys:", list(sd.keys())[:5])
     model.load_state_dict(sd)
     model.eval()
-    record("Model loaded and set to eval mode.")
+    record("Model(V2).pth loaded into EfficientNet-B0 and set to eval mode.")
 except Exception as e:
-    record(f"Failed to load model: {e}", level='ERROR')
+    record(f"Failed to load model(V2).pth: {e}", level='ERROR')
     raise
 
 # ─── Preprocessing pipeline ───────────────────────────────────────────────────
 transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((48, 48)),
+    transforms.ToPILImage(),                         # ← convert numpy.ndarray → PIL Image
+    transforms.Grayscale(num_output_channels=3),
+    transforms.Resize(64),
+    transforms.CenterCrop(64),
     transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
+    transforms.Normalize([0.485,0.456,0.406],
+                         [0.229,0.224,0.225]),
 ])
 record("Transform pipeline ready.")
 
@@ -89,38 +81,42 @@ def index():
 # ─── Socket.IO Frame Handler ──────────────────────────────────────────────────
 @socketio.on('frame')
 def handle_frame(data):
+
     results = []
     try:
-        # Split off the "data:image/…;base64," prefix
+        # Decode the base64 frame into a CV2 image
         _, b64 = data.split(',', 1)
         img_bytes = base64.b64decode(b64)
         arr = np.frombuffer(img_bytes, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
         if frame is None:
             raise ValueError("Decoded frame is None")
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=5, minSize=(40, 40))
 
         for (x, y, w, h) in faces:
-            roi = gray[y:y+h, x:x+w]
-            tensor = transform(roi).unsqueeze(0)  # [1, C, H, W]
+            
+            roi = gray[y:y+h, x:x+w]                  # numpy.ndarray
+            tensor = transform(roi).unsqueeze(0)      # now works without TypeError
 
             with torch.no_grad():
-                out = model(tensor)
+                
+                out   = model(tensor)
                 probs = torch.softmax(out, dim=1)[0]
-                pred = int(probs.argmax().item())
-                conf = float(probs[pred].item())
+                pred  = int(probs.argmax().item())
+                conf  = float(probs[pred].item())
 
             results.append({
-                'box':       [int(x), int(y), int(w), int(h)],
+                'box':        [int(x), int(y), int(w), int(h)],
                 'pred_label': mapping[pred],
                 'confidence': round(conf, 4)
             })
             record(f"Face at {(x,y,w,h)} -> {mapping[pred]} ({conf:.4f})")
 
         emit('predictions', results)
-        if len(results) != 0:
+        if results:
             record(f"Emitted {len(results)} prediction(s)")
 
     except Exception as e:

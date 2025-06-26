@@ -61,7 +61,7 @@
         const dataURL = sendCanvas.toDataURL('image/jpeg', 0.7);
         socket.emit('frame', dataURL);
       }
-    }, 3000);
+    }, 500);
 
     // Handle incoming predictions
     socket.on('predictions', preds => {

@@ -1,229 +1,190 @@
 import os
 import sys
 import csv
+from collections import Counter
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torch.cuda import amp
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, models
 from tqdm import tqdm
 
-# ========== Configuration ==========
-ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
-TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
-VAL_DIR         = os.path.join(ROOT_DIR, 'test')
-CSV_PATH        = os.path.join(sys.path[0], 'validation_accuracy.csv')
-BEST_MODEL_PATH = os.path.join(sys.path[0], 'best_model.pth')
-BATCH_SIZE      = 64
-NUM_EPOCHS      = 50
-LEARNING_RATE   = 1e-3
-DEVICE          = torch.device('cpu')
-PATIENCE        = 7  # early stopping patience
+# ——— MixUp utility ———
+def mixup_data(x, y, alpha=0.4):
 
-# ========== Custom Blocks & Model ==========
-class SEBlock(nn.Module):
-    def __init__(self, channels, reduction=16):
-        super().__init__()
-        self.fc = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(channels, channels // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels, bias=False),
-            nn.Sigmoid()
-        )
-    def forward(self, x):
-        w = self.fc(x).unsqueeze(-1).unsqueeze(-1)
-        return x * w
+    if alpha > 0:
 
-class ResidualSEBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, downsample=False):
-        super().__init__()
-        stride = 2 if downsample else 1
-        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
-        self.bn1   = nn.BatchNorm2d(out_ch)
-        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm2d(out_ch)
-        self.se    = SEBlock(out_ch, reduction=8)
-        self.relu  = nn.ReLU(inplace=True)
-        self.down  = (nn.Sequential(
-                          nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
-                          nn.BatchNorm2d(out_ch)
-                      ) if downsample else nn.Identity())
-        self.drop  = nn.Dropout2d(0.1)
+        lam = torch._sample_dirichlet(torch.tensor([alpha, alpha]))[0].item()
+    else:
+        lam = 1.0
 
-    def forward(self, x):
-        identity = self.down(x)
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out = self.drop(out)
-        out = self.se(out)
-        out += identity
-        return self.relu(out)
+    idx = torch.randperm(x.size(0), device=x.device)
+    mixed_x = lam * x + (1. - lam) * x[idx]
+    y_a, y_b = y, y[idx]
 
-class CustomResNet(nn.Module):
-    def __init__(self, num_classes=7):
-        super().__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(1, 32, 3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-        )
-        self.stage1 = self._make_stage(32,  64,  blocks=2, downsample=True)
-        self.stage2 = self._make_stage(64, 128, blocks=2, downsample=True)
-        self.stage3 = self._make_stage(128,256, blocks=2, downsample=True)
-        self.dropout    = nn.Dropout(0.5)
-        self.pool       = nn.AdaptiveAvgPool2d(1)
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(256, 128, bias=False),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(128, num_classes)
-        )
+    return mixed_x, y_a, y_b, lam
 
-    def _make_stage(self, in_ch, out_ch, blocks, downsample):
-        layers = [ResidualSEBlock(in_ch, out_ch, downsample)]
-        for _ in range(1, blocks):
-            layers.append(ResidualSEBlock(out_ch, out_ch, downsample=False))
-        return nn.Sequential(*layers)
+def mixup_criterion(crit, pred, y_a, y_b, lam):
 
-    def forward(self, x):
-        x = self.stem(x)
-        x = self.stage1(x)
-        x = self.stage2(x)
-        x = self.stage3(x)
-        x = self.dropout(x)
-        x = self.pool(x)
-        return self.classifier(x)
+    return lam * crit(pred, y_a) + (1. - lam) * crit(pred, y_b)
 
 
 def main():
-    # ========== Data Augmentation & Transforms ==========
-    train_transform = transforms.Compose([
-        transforms.Grayscale(1),
-        transforms.Resize((64, 64)),
-        transforms.RandomResizedCrop(48, scale=(0.75, 1.0)),
+
+    # ——— Config ———
+
+    ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
+    TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
+    VAL_DIR         = os.path.join(ROOT_DIR, 'test')
+    CSV_PATH        = os.path.join(sys.path[0], 'V2_fer2013_val_acc.csv')
+    BEST_MODEL_PATH = os.path.join(sys.path[0], 'V2_fer2013_best.pth')
+
+    BATCH_SIZE    = 64
+    NUM_EPOCHS    = 50
+    LR            = 1e-3
+    PATIENCE      = 8
+    ALPHA         = 0.4   # mixup
+    SMOOTHING     = 0.1   # label smoothing
+    DEVICE        = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    NUM_CLASSES   = 7
+
+    print(f"➡️ Using device: {DEVICE}")
+
+    # ——— Transforms ———
+
+    train_tf = transforms.Compose([
+
+        transforms.Grayscale(num_output_channels=3),
+        transforms.RandomResizedCrop(64, scale=(0.8,1.0)),
         transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(20),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+        transforms.AutoAugment(transforms.AutoAugmentPolicy.IMAGENET),
+        transforms.ColorJitter(0.4,0.4,0.4,0.1),
         transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.15), ratio=(0.3, 3.3)),
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225]),
+        transforms.RandomErasing(p=0.5, scale=(0.02,0.15), ratio=(0.3,3.3)),
+
+    ])
+    val_tf = transforms.Compose([
+
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize(64),
+        transforms.CenterCrop(64),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225]),
     ])
 
-    val_transform = transforms.Compose([
-        transforms.Grayscale(1),
-        transforms.Resize((48, 48)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-    ])
+    # ——— Datasets & Weighted Sampler ———
+    train_ds = datasets.ImageFolder(TRAIN_DIR, transform=train_tf)
+    val_ds   = datasets.ImageFolder(VAL_DIR,   transform=val_tf)
 
-    # ========== DataLoaders ==========
-    train_ds      = datasets.ImageFolder(TRAIN_DIR, transform=train_transform)
-    val_ds        = datasets.ImageFolder(VAL_DIR,   transform=val_transform)
-    train_loader  = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
-    val_loader    = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    # balance classes by inverse frequency
+    3
+    counts = Counter(label for _,label in train_ds.samples)
+    class_w = {cls: 1.0/count for cls,count in counts.items()}
+    samp_w  = [class_w[label] for _,label in train_ds.samples]
+    sampler = WeightedRandomSampler(samp_w, num_samples=len(samp_w), replacement=True)
 
-    # ========== Model, Loss, Optimizer, Scheduler ==========
-    model     = CustomResNet().to(DEVICE)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=3
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
+                              sampler=sampler, num_workers=4, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE,
+                              shuffle=False, num_workers=4, pin_memory=True)
+
+    # ——— Model ———
+    model = models.efficientnet_b0(pretrained=True)
+    in_f = model.classifier[1].in_features
+    model.classifier[1] = nn.Linear(in_f, NUM_CLASSES)
+    model = model.to(DEVICE)
+
+    # ——— Loss, Opt, Scheduler, AMP ———
+    criterion = nn.CrossEntropyLoss(label_smoothing=SMOOTHING)
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
+    total_steps = NUM_EPOCHS * len(train_loader)
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=LR, total_steps=total_steps,
+        pct_start=0.3, anneal_strategy='cos'
     )
+    scaler = amp.GradScaler()
 
-    # ========== Logging & Early Stopping Setup ==========
-    best_val_acc = 0.0
-    no_improve   = 0
+    # ——— Logging & Early Stop ———
+
+    best_acc   = 0.0
+    no_improve = 0
     with open(CSV_PATH, 'w', newline='') as f:
-        csv.writer(f).writerow([
-            'epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc'
-        ])
+        csv.writer(f).writerow(['epoch','train_loss','train_acc','val_loss','val_acc'])
 
-    # ========== Training Loop ==========
-    for epoch in range(1, NUM_EPOCHS + 1):
-        # — Training —
+    for epoch in range(1, NUM_EPOCHS+1):
+        print(f"\n🔄 Epoch {epoch}/{NUM_EPOCHS}")
+        # — Train —
         model.train()
-        train_bar = tqdm(train_loader, desc=f"[{epoch}/{NUM_EPOCHS}] Train", position=0, leave=True)
         t_loss = t_correct = t_total = 0
-
-        for imgs, labels in train_bar:
+        pbar = tqdm(train_loader, desc="Train", leave=False)
+        for imgs, labels in pbar:
+            
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
+            imgs, y_a, y_b, lam = mixup_data(imgs, labels, ALPHA)
+
             optimizer.zero_grad()
-            out = model(imgs)
-            loss = criterion(out, labels)
-            loss.backward()
-            optimizer.step()
+            with amp.autocast():
+                preds = model(imgs)
+                loss  = mixup_criterion(criterion, preds, y_a, y_b, lam)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
 
-            t_loss    += loss.item() * imgs.size(0)
-            preds      = out.argmax(1)
-            t_correct += (preds == labels).sum().item()
-            t_total   += labels.size(0)
+            t_loss   += loss.item() * imgs.size(0)
+            top1     = preds.argmax(1)
+            correct  = (lam * (top1==y_a) + (1.-lam)*(top1==y_b)).sum().item()
+            t_correct+= correct
+            t_total  += labels.size(0)
 
-            train_bar.set_postfix(
-                loss=f"{t_loss/t_total:.4f}",
-                acc =f"{100.*t_correct/t_total:.2f}%"
-            )
+            pbar.set_postfix(loss=f"{t_loss/t_total:.4f}",
+                             acc =f"{100.*t_correct/t_total:.2f}%")
 
         train_loss = t_loss / t_total
-        train_acc  = 100. * t_correct / t_total
+        train_acc  = 100.*t_correct / t_total
 
-        # — Validation —
+        # — Validate —
         model.eval()
-        val_bar = tqdm(val_loader, desc=f"[{epoch}/{NUM_EPOCHS}] Val  ", position=1, leave=True)
         v_loss = v_correct = v_total = 0
-
+        vbar = tqdm(val_loader, desc=" Val", leave=False)
         with torch.no_grad():
-            for imgs, labels in val_bar:
+            for imgs, labels in vbar:
                 imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
-                out = model(imgs)
-                loss = criterion(out, labels)
+                logits = model(imgs)
+                loss   = criterion(logits, labels)
 
-                v_loss    += loss.item() * imgs.size(0)
-                preds      = out.argmax(1)
-                v_correct += (preds == labels).sum().item()
-                v_total   += labels.size(0)
+                v_loss   += loss.item() * imgs.size(0)
+                preds     = logits.argmax(1)
+                v_correct+= (preds==labels).sum().item()
+                v_total  += labels.size(0)
 
-                val_bar.set_postfix(
-                    loss=f"{v_loss/v_total:.4f}",
-                    acc =f"{100.*v_correct/v_total:.2f}%"
-                )
+                vbar.set_postfix(loss=f"{v_loss/v_total:.4f}",
+                                 acc =f"{100.*v_correct/v_total:.2f}%")
 
         val_loss = v_loss / v_total
-        val_acc  = 100. * v_correct / v_total
-        scheduler.step(val_acc)
+        val_acc  = 100.*v_correct / v_total
 
-        # — Checkpoint & Early Stopping —
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            no_improve   = 0
+        # — Checkpoint & Early Stop —
+        if val_acc > best_acc:
+            best_acc, no_improve = val_acc, 0
             torch.save(model.state_dict(), BEST_MODEL_PATH)
-            tqdm.write(f"🏆 New best model @ epoch {epoch} — Val Acc: {val_acc:.2f}%")
+            print(f"🏆 New best: {val_acc:.2f}%")
         else:
             no_improve += 1
             if no_improve >= PATIENCE:
-                tqdm.write(f"⏸ Early stopping: no improvement for {PATIENCE} epochs.")
+                print(f"⏸ Stopping early after {epoch} epochs")
                 break
 
-        # — Log to CSV & Console —
+        # — Log —
         with open(CSV_PATH, 'a', newline='') as f:
-            csv.writer(f).writerow([
-                epoch,
-                f"{train_loss:.4f}", f"{train_acc:.2f}",
-                f"{val_loss:.4f}",   f"{val_acc:.2f}"
-            ])
+            csv.writer(f).writerow([epoch,
+                                    f"{train_loss:.4f}", f"{train_acc:.2f}",
+                                    f"{val_loss:.4f}",   f"{val_acc:.2f}"])
 
-        tqdm.write(
-            f"[{epoch}/{NUM_EPOCHS}] "
-            f"Train ▶ loss: {train_loss:.4f}, acc: {train_acc:.2f}% | "
-            f" Val ▶ loss: {val_loss:.4f}, acc: {val_acc:.2f}% | "
-            f"LR: {optimizer.param_groups[0]['lr']:.1e}"
-        )
-
-    print(f"\nDone. Best Val Acc: {best_val_acc:.2f}% — model saved to {BEST_MODEL_PATH}")
-
+    print(f"\n✅ Done! Best Val Acc: {best_acc:.2f}% (→{BEST_MODEL_PATH})")
 
 if __name__ == "__main__":
     main()

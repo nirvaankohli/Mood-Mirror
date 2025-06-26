@@ -115,11 +115,13 @@ def main():
         csv.writer(f).writerow(['epoch','train_loss','train_acc','val_loss','val_acc'])
 
     for epoch in range(1, NUM_EPOCHS+1):
+        
         print(f"\n🔄 Epoch {epoch}/{NUM_EPOCHS}")
         # — Train —
         model.train()
         t_loss = t_correct = t_total = 0
         pbar = tqdm(train_loader, desc="Train", leave=False)
+
         for imgs, labels in pbar:
             
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
@@ -148,6 +150,7 @@ def main():
 
         # — Validate —
         model.eval()
+
         v_loss = v_correct = v_total = 0
         vbar = tqdm(val_loader, desc=" Val", leave=False)
         with torch.no_grad():
@@ -168,6 +171,7 @@ def main():
         val_acc  = 100.*v_correct / v_total
 
         # — Checkpoint & Early Stop —
+        
         if val_acc > best_acc:
             best_acc, no_improve = val_acc, 0
             torch.save(model.state_dict(), BEST_MODEL_PATH)
