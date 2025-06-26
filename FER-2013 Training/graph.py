@@ -12,7 +12,9 @@ V2 = pd.read_csv(os.path.join(sys.path[0], 'V2_validation_accuracy.csv'))
 
 V3 = pd.read_csv(os.path.join(sys.path[0], 'V3_validation_accuracy.csv'))
 
-for df in (V1, V2, V3):
+V4 = pd.read_csv(os.path.join(sys.path[0], 'V4_validation_accuracy.csv'))
+
+for df in (V1, V2, V3, V4):
 
     if 'epoch' not in df.columns:
     
@@ -54,8 +56,9 @@ def percent_bin_average(df, epoch_col='epoch', acc_col='val_acc', bins=100):
 V1_pct = percent_bin_average(V1).assign(model='V1')
 V2_pct = percent_bin_average(V2).assign(model='V2')
 V3_pct = percent_bin_average(V3).assign(model='V3')
+V4_pct = percent_bin_average(V3).assign(model='V4')
 
-df_plot = pd.concat([V1_pct, V2_pct, V3_pct], ignore_index=True)
+df_plot = pd.concat([V1_pct, V2_pct, V3_pct, V4_pct], ignore_index=True)
 
 fig = px.line(
     df_plot,

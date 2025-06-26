@@ -20,14 +20,30 @@ def record(message: str, level: str = 'INFO'):
 record("Logging initialized.")
 
 # ─── Class mapping ─────────────────────────────────────────────────────────────
+
+
 mapping = {
     0: 'angry', 1: 'disgust', 2: 'fear',
     3: 'happy', 4: 'neutral', 5: 'sad', 6: 'surprise'
 }
 
+stress_weights = {
+
+    'angry': 0.85,
+    'sad': 0.9,
+    'fear': 0.4,
+    'disgust': 0.0,
+    'surprise': 0.0,
+    'neutral': 0.000001,
+    'happy': -0.5
+
+}
+
 # ─── Flask & Socket.IO init ────────────────────────────────────────────────────
+
 app = Flask(__name__, template_folder='templates')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'secret!')
+
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
@@ -102,7 +118,7 @@ def handle_frame(data):
             tensor = transform(roi).unsqueeze(0)      # now works without TypeError
 
             with torch.no_grad():
-                
+
                 out   = model(tensor)
                 probs = torch.softmax(out, dim=1)[0]
                 pred  = int(probs.argmax().item())

@@ -24,6 +24,7 @@
   </style>
 </head>
 <body>
+
   <div id="video-container">
     <video id="video" autoplay playsinline width="640" height="480"></video>
     <canvas id="overlay" width="640" height="480"></canvas>
@@ -34,6 +35,7 @@
   <div id="info"><em>Waiting for predictions…</em></div>
 
   <script>
+    
     const socket = io();
     socket.on('connect',        () => console.log("✅ Socket connected"));
     socket.on('connect_error',  e => console.error("❌ Connect error:", e));
