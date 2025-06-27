@@ -19,7 +19,7 @@ def mixup_data(x, y, alpha=0.4):
 
         lam = torch._sample_dirichlet(torch.tensor([alpha, alpha]))[0].item()
     else:
-        
+
         lam = 1.0
     idx = torch.randperm(x.size(0), device=x.device)
     mixed_x = lam * x + (1. - lam) * x[idx]
@@ -31,7 +31,9 @@ def mixup_criterion(crit, pred, y_a, y_b, lam):
 
 
 def main():
+
     # ——— Config ———
+
     ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
     TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
     VAL_DIR         = os.path.join(ROOT_DIR, 'test')
@@ -50,7 +52,9 @@ def main():
     print(f"➡️ Using device: {DEVICE}")
 
     # ——— Transforms ———
+
     train_tf = transforms.Compose([
+
         transforms.Grayscale(num_output_channels=3),
         transforms.RandomResizedCrop(64, scale=(0.8,1.0)),
         transforms.RandomHorizontalFlip(),
@@ -59,6 +63,7 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225]),
         transforms.RandomErasing(p=0.5, scale=(0.02,0.15), ratio=(0.3,3.3)),
+    
     ])
     val_tf = transforms.Compose([
         transforms.Grayscale(num_output_channels=3),

@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "mood-mirror"
+version = "0.1.0"
+package-mode = false
+description = "Offline-First desktop app for stress detection and smart break reminders"
+authors     = ["Nirvaan <nirvaan.kohli@gmail.com>"]
+readme      = "README.md"
+
+[tool.poetry.dependencies]
+# restrict to Python versions PySide6 supports
+python      = ">=3.11,<3.14"
+pyside6     = ">=6.9.1,<7.0.0"
+onnxruntime = ">=1.22.0,<2.0.0"
+plyer       = ">=2.1.0,<3.0.0"
+apscheduler = ">=3.11.0,<4.0.0"
+onnx = "^1.18.0"
+torch = "^2.7.1"
+torchvision = "^0.22.1"
+
+[build-system]
+requires    = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

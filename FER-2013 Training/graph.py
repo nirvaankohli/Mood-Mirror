@@ -61,6 +61,7 @@ V4_pct = percent_bin_average(V3).assign(model='V4')
 df_plot = pd.concat([V1_pct, V2_pct, V3_pct, V4_pct], ignore_index=True)
 
 fig = px.line(
+    
     df_plot,
     x='percent_training',
     y='val_acc',
