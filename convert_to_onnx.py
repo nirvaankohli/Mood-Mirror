@@ -1,38 +1,55 @@
-# convert_to_onnx.py
+#!/usr/bin/env python3
+import sys
+import os
+
 
 import torch
-import torch.nn as nn
-from torchvision import models
+from timm import create_model
 
-BEST_MODEL_PATH = "model(V2).pth"
-ONNX_MODEL_PATH = "model(V2).onnx"
-NUM_CLASSES     = 7
-INPUT_SHAPE     = (1, 3, 64, 64)   # batch, channels, height, width
-OPSET_VERSION   = 12               # >=11 is usually fine
+# ——— Config ———
+BEST_MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model(V4).pth')
+ONNX_MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model(V4).onnx')
 
-model = models.efficientnet_b0(pretrained=False)
-in_f  = model.classifier[1].in_features
-model.classifier[1] = nn.Linear(in_f, NUM_CLASSES)
+# must match your training
+MODEL_NAME  = 'tf_efficientnetv2_s.in21k'
+NUM_CLASSES = 7
+IMG_SIZE    = 112  # the H and W used during training
 
-state_dict = torch.load(BEST_MODEL_PATH, map_location="cpu")
-model.load_state_dict(state_dict)
-model.eval()
+import onnx
 
-dummy_input = torch.randn(INPUT_SHAPE, dtype=torch.float32)
+def export_to_onnx():
 
-torch.onnx.export(
-    model,
-    dummy_input,
-    ONNX_MODEL_PATH,
-    export_params=True,            # store the trained parameter weights inside the model file
-    opset_version=OPSET_VERSION,   
-    do_constant_folding=True,      
-    input_names=['input'],         
-    output_names=['output'],       
-    dynamic_axes={
-        'input':  {0: 'batch_size', 2: 'height', 3: 'width'},
-        'output': {0: 'batch_size'}
-    }
-)
+    # build model
+    model = create_model(
+        MODEL_NAME,
+        pretrained=False,
+        num_classes=NUM_CLASSES
+    )
 
-print(f"✅ Exported ONNX model to: {ONNX_MODEL_PATH}")
+    # load weights
+    checkpoint = torch.load(BEST_MODEL_PATH, map_location='cpu')
+    model.load_state_dict(checkpoint)
+    model.eval()
+
+    # dummy input
+    dummy_input = torch.randn(1, 3, IMG_SIZE, IMG_SIZE, device='cpu')
+
+    # export
+    torch.onnx.export(
+        model,
+        dummy_input,
+        ONNX_MODEL_PATH,
+        export_params=True,
+        opset_version=13,
+        do_constant_folding=True,
+        input_names=['input'],
+        output_names=['output'],
+        dynamic_axes={
+            'input':  {0: 'batch_size'},
+            'output': {0: 'batch_size'},
+        }
+    )
+    print(f"✅ ONNX model saved to: {ONNX_MODEL_PATH}")
+
+if __name__ == '__main__':
+    export_to_onnx()

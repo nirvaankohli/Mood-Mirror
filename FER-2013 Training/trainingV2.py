@@ -11,7 +11,6 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchvision import datasets, transforms, models
 from tqdm import tqdm
 
-# ——— MixUp utility ———
 def mixup_data(x, y, alpha=0.4):
 
     if alpha > 0:
@@ -52,7 +51,7 @@ def main():
 
     print(f"➡️ Using device: {DEVICE}")
 
-    # ——— Transforms ———
+    # ——— Transforms/Augmentations ———
 
     train_tf = transforms.Compose([
 
@@ -67,7 +66,6 @@ def main():
 
     ])
     val_tf = transforms.Compose([
-
         transforms.Grayscale(num_output_channels=3),
         transforms.Resize(64),
         transforms.CenterCrop(64),
@@ -76,6 +74,7 @@ def main():
     ])
 
     # ——— Datasets & Weighted Sampler ———
+
     train_ds = datasets.ImageFolder(TRAIN_DIR, transform=train_tf)
     val_ds   = datasets.ImageFolder(VAL_DIR,   transform=val_tf)
 
@@ -92,12 +91,14 @@ def main():
                               shuffle=False, num_workers=4, pin_memory=True)
 
     # ——— Model ———
+
     model = models.efficientnet_b0(pretrained=True)
     in_f = model.classifier[1].in_features
     model.classifier[1] = nn.Linear(in_f, NUM_CLASSES)
     model = model.to(DEVICE)
 
     # ——— Loss, Opt, Scheduler, AMP ———
+    
     criterion = nn.CrossEntropyLoss(label_smoothing=SMOOTHING)
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     total_steps = NUM_EPOCHS * len(train_loader)
@@ -128,9 +129,11 @@ def main():
             imgs, y_a, y_b, lam = mixup_data(imgs, labels, ALPHA)
 
             optimizer.zero_grad()
+
             with amp.autocast():
                 preds = model(imgs)
                 loss  = mixup_criterion(criterion, preds, y_a, y_b, lam)
+            
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -138,7 +141,9 @@ def main():
 
             t_loss   += loss.item() * imgs.size(0)
             top1     = preds.argmax(1)
+            
             correct  = (lam * (top1==y_a) + (1.-lam)*(top1==y_b)).sum().item()
+            
             t_correct+= correct
             t_total  += labels.size(0)
 
@@ -149,12 +154,16 @@ def main():
         train_acc  = 100.*t_correct / t_total
 
         # — Validate —
+
         model.eval()
 
         v_loss = v_correct = v_total = 0
         vbar = tqdm(val_loader, desc=" Val", leave=False)
+
         with torch.no_grad():
+
             for imgs, labels in vbar:
+
                 imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
                 logits = model(imgs)
                 loss   = criterion(logits, labels)
@@ -173,22 +182,36 @@ def main():
         # — Checkpoint & Early Stop —
         
         if val_acc > best_acc:
+
             best_acc, no_improve = val_acc, 0
             torch.save(model.state_dict(), BEST_MODEL_PATH)
+
             print(f"🏆 New best: {val_acc:.2f}%")
+
         else:
+
             no_improve += 1
+
+            print(f"💔 No improvement: {val_acc:.2f}% (best: {best_acc:.2f}%)")
+
             if no_improve >= PATIENCE:
+
                 print(f"⏸ Stopping early after {epoch} epochs")
+
                 break
 
         # — Log —
+
         with open(CSV_PATH, 'a', newline='') as f:
-            csv.writer(f).writerow([epoch,
-                                    f"{train_loss:.4f}", f"{train_acc:.2f}",
-                                    f"{val_loss:.4f}",   f"{val_acc:.2f}"])
+
+            csv.writer(f).writerow(
+                [   epoch,
+                    f"{train_loss:.4f}", f"{train_acc:.2f}",
+                                    f"{val_loss:.4f}",   f"{val_acc:.2f}"
+                ])
 
     print(f"\n✅ Done! Best Val Acc: {best_acc:.2f}% (→{BEST_MODEL_PATH})")
 
 if __name__ == "__main__":
+    
     main()
