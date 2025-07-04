@@ -112,6 +112,7 @@ ApplicationWindow {
                 backend.saveUser(tempName)
                 controller.continueToApp()
             }
+
         }
     }
 }
