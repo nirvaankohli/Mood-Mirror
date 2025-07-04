@@ -43,8 +43,9 @@ from PySide6.QtCore    import (
 
 from PySide6.QtQml     import QQmlApplicationEngine
 from PySide6.QtGui     import (
-    
-    QImage, 
+
+    QImage,
+     
     QPixmap)
 
 from core.inference import EmotionModel
@@ -103,7 +104,7 @@ class Backend(QObject):
         super().__init__()
         self._userName = ""
         try:
-            with open("username.txt", "r") as f:
+            with open("data/username.txt", "r") as f:
                 self._userName = f.read().strip()
         except FileNotFoundError:
             pass
@@ -115,7 +116,7 @@ class Backend(QObject):
     @Slot(str)
     def saveUser(self, name):
         self._userName = name
-        with open("username.txt", "w") as f:
+        with open("data/username.txt", "w") as f:
             f.write(name)
         self.userNameChanged.emit()
 

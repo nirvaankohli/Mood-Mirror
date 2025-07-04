@@ -15,8 +15,6 @@ MODEL_NAME  = 'tf_efficientnetv2_s.in21k'
 NUM_CLASSES = 7
 IMG_SIZE    = 112  # the H and W used during training
 
-import onnx
-
 def export_to_onnx():
 
     # build model

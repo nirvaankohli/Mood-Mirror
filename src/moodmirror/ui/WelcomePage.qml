@@ -20,7 +20,7 @@ ApplicationWindow {
 
     Image {
         anchors.fill: parent
-        source: Qt.resolvedUrl("../assets/calm_scenery.png")
+        source: Qt.resolvedUrl("../assets/images/calm_scenery.png")
         fillMode: Image.PreserveAspectCrop
         z: -1
     }
