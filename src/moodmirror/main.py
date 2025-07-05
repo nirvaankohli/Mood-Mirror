@@ -48,9 +48,27 @@ from PySide6.QtGui     import (
      
     QPixmap)
 
-from core.inference import EmotionModel
+from moodmirror.core.inference import EmotionModel
+
+from pathlib import Path
+
+
+import sys
+
+def get_data_path(*parts: str) -> Path:
+    
+    if getattr(sys, 'frozen', False):
+        base = Path(sys._MEIPASS)
+    else:
+        
+        base = Path(__file__).parent
+    return base.joinpath(*parts)
+
+username_file = get_data_path('data', 'username.txt')
+
 
 # ─── Ensure Qt DLLs are on the PATH ───────────────────────────────────────
+
 import PySide6
 pyside_pkg_dir = os.path.dirname(PySide6.__file__)
 os.environ["PATH"] = pyside_pkg_dir + os.pathsep + os.environ.get("PATH", "")
@@ -104,7 +122,7 @@ class Backend(QObject):
         super().__init__()
         self._userName = ""
         try:
-            with open("data/username.txt", "r") as f:
+            with open(username_file, "r") as f:
                 self._userName = f.read().strip()
         except FileNotFoundError:
             pass
@@ -116,7 +134,7 @@ class Backend(QObject):
     @Slot(str)
     def saveUser(self, name):
         self._userName = name
-        with open("data/username.txt", "w") as f:
+        with open(username_file, "w") as f:
             f.write(name)
         self.userNameChanged.emit()
 
@@ -179,11 +197,7 @@ class AppController(QObject):
         self._welcome_engine = engine
 
         # prepare DNN-based EmotionModel
-        self.model = EmotionModel(
-            onnx_path   = "models/model(V4).onnx",
-            dnn_prototxt= "models/deploy.prototxt",
-            dnn_weights = "models/res10_300x300_ssd_iter_140000.caffemodel"
-        )
+        self.model = EmotionModel()
 
         # prepare stress data
         self.stressModel = StressModel()
@@ -204,7 +218,7 @@ class AppController(QObject):
         ctxt.setContextProperty("stressModel", self.stressModel)
         ctxt.setContextProperty("controller",   self)
 
-        dash_qml = os.path.abspath(os.path.join("ui", "Dashboard.qml"))
+        dash_qml = Path(__file__).parent / "ui" / "Dashboard.qml"
         print(f"Loading dashboard QML from: {dash_qml}")
         self._dash_engine.load(QUrl.fromLocalFile(dash_qml))
 
@@ -219,18 +233,38 @@ class AppController(QObject):
         self._inference_win = win
 
 def main():
+
+    from pathlib import Path
+
+    print("Mood Mirror - Starting up...")
+
     app    = QApplication(sys.argv)
+
+    print("Mood Mirror - Initializing QML engine...")
+
     engine = QQmlApplicationEngine()
+
+    print("Mood Mirror - Setting up backend and controller...")
 
     backend    = Backend()
     controller = AppController(engine)
+
+    print("Mood Mirror - Binding backend and controller to QML context...")
 
     ctxt = engine.rootContext()
     ctxt.setContextProperty("backend",    backend)
     ctxt.setContextProperty("controller", controller)
 
-    welcome = os.path.abspath(os.path.join("ui", "WelcomePage.qml"))
+    print("Mood Mirror - Loading WelcomePage.qml...")
+
+    welcome = get_data_path('ui', 'WelcomePage.qml')
+
+    print(f"Loading QML from: {welcome}")
+
     engine.load(QUrl.fromLocalFile(welcome))
+
+    print("Mood Mirror - QML engine loaded, checking for root objects...")
+
     if not engine.rootObjects():
         sys.exit(-1)
 

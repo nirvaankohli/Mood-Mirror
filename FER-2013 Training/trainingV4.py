@@ -36,7 +36,11 @@ def rand_bbox(size, lam):
 
         )
 
-    cx, cy = np.random.randint(W), np.random.randint(H)
+    cx, cy = (
+        
+        np.random.randint(W),
+               
+              np.random.randint(H))
 
     bbx1 = max(
         

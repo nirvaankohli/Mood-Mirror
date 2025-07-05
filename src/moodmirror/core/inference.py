@@ -4,6 +4,18 @@ import numpy as np
 import cv2
 from PIL import Image
 from torchvision import transforms
+from pathlib import Path
+import sys
+
+def get_data_path(*paths: str) -> Path:
+    
+    if getattr(sys, 'frozen', False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).parent.parent
+
+    return base.joinpath(*paths)
+
 
 class EmotionModel:
     EMOTIONS = [
@@ -12,11 +24,12 @@ class EmotionModel:
     ]
 
     def __init__(
+            
         self,
-        onnx_path: str = "models/model(V4).onnx",
-        dnn_prototxt="models/deploy.prototxt",
-        dnn_weights="models/res10_300x300_ssd_iter_140000.caffemodel"
-
+        onnx_path: str = str(get_data_path('models', 'model_v4.onnx')),
+        dnn_prototxt= str(get_data_path('models', 'deploy.prototxt')),
+        dnn_weights= str(get_data_path('models', 'res10_300x300_ssd_iter_140000.caffemodel'))
+    
     ):
         # --- ONNX runtime setup ---
         providers = (
