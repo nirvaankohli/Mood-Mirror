@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 # ——— Helpers for MixUp & CutMix ———
 
+
 def rand_bbox(size, lam):
 
     W, H = (
@@ -28,6 +29,7 @@ def rand_bbox(size, lam):
             )
 
     cut_rat = np.sqrt(1 - lam)
+
     cut_w, cut_h = (
 
         int(W * cut_rat), 
@@ -37,10 +39,12 @@ def rand_bbox(size, lam):
         )
 
     cx, cy = (
-        
+
         np.random.randint(W),
                
-              np.random.randint(H))
+        np.random.randint(H)
+
+        )
 
     bbx1 = max(
         
@@ -123,10 +127,22 @@ def mixup_cutmix_data(x, y, alpha=1.0, cutmix_prob=0.5):
 
             y[torch.randperm(x.size(0))]
 
+
                     )
         
         return (
-            x, y_a, y_b, lam, 'cutmix')
+
+            x, 
+
+            y_a, 
+
+            y_b, 
+
+            lam, 
+
+            'cutmix'
+
+            )
     
     else:
 
@@ -136,24 +152,45 @@ def mixup_cutmix_data(x, y, alpha=1.0, cutmix_prob=0.5):
 
         x = lam * x + (1 - lam) * x[idx]
 
-        y_a, y_b = y, y[idx]
-        return (x, 
-                y_a,
-                y_b, 
-                lam, 
-                'mixup')
+        y_a, y_b = (
+
+            y, 
+
+            y[idx]
+
+            )
+
+        return (
+
+            x, 
+
+            y_a,
+
+            y_b, 
+
+            lam, 
+
+            'mixup'
+
+            )
 
 
 def main():
 
     # ——— Config ———
 
-    ROOT_DIR        = os.path.join(sys.path[0], 'fer2013', 'versions', '1')
+    ROOT_DIR        = os.path.join(
+
+        sys.path[0], 
+        'fer2013', 
+        'versions', 
+        '1'
+                                   )
+    
     TRAIN_DIR       = os.path.join(ROOT_DIR, 'train')
     VAL_DIR         = os.path.join(ROOT_DIR, 'test')
     CSV_PATH        = os.path.join(sys.path[0], 'V4_validation_accuracy.csv')
     BEST_MODEL_PATH = os.path.join(sys.path[0], 'V4_best_model.pth')
-
     BATCH_SIZE    = 64
     NUM_EPOCHS    = 75
     LR            = 1e-3
@@ -198,14 +235,36 @@ def main():
 
     # ——— Datasets & Sampler ———
     
-    train_ds = datasets.ImageFolder(TRAIN_DIR, transform=train_tf)
-    val_ds   = datasets.ImageFolder(VAL_DIR,   transform=val_tf)
+    train_ds = datasets.ImageFolder(
+
+        TRAIN_DIR, 
+
+        transform=train_tf
+
+        )
+    
+    val_ds   = datasets.ImageFolder(
+
+        VAL_DIR,  
+
+        transform=val_tf
+
+        )
 
     counts = Counter(label for _, label in train_ds.samples)
 
     class_w = {cls: 1.0 / count for cls, count in counts.items()}
     samp_w  = [class_w[label] for _, label in train_ds.samples]
-    sampler = WeightedRandomSampler(samp_w, len(samp_w), replacement=True)
+
+    sampler = WeightedRandomSampler(
+
+        samp_w, 
+
+        len(samp_w), 
+
+        replacement=True
+        
+        )
 
     train_loader = DataLoader(
 
@@ -214,6 +273,7 @@ def main():
         sampler=sampler, num_workers=4, pin_memory=True
 
     )
+
     val_loader = DataLoader(
 
         val_ds, batch_size=BATCH_SIZE,
@@ -244,9 +304,11 @@ def main():
     
     optimizer = optim.AdamW(
 
-            model.parameters(), 
+            model.parameters(),
+
             lr=LR, 
-                            weight_decay=1e-4
+
+            weight_decay=1e-4
                             
                             )
     
@@ -301,6 +363,7 @@ def main():
         for imgs, labels in pbar:
             
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
+            
             imgs, y_a, y_b, lam, aug_type = mixup_cutmix_data(imgs, labels, ALPHA)
 
             optimizer.zero_grad()
@@ -368,6 +431,7 @@ def main():
                 )
 
         val_loss = v_loss / v_total
+
         val_acc = 100. * v_correct / v_total
 
         # — Checkpoint & Early Stop —
