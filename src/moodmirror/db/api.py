@@ -71,7 +71,8 @@ class init_db():
                     day                   TEXT    NOT NULL,
                     start_time            TEXT    NOT NULL, 
                     end_time              TEXT,
-                    overall_stress_score  REAL
+                    overall_stress_score  REAL,
+                    total_reminders      REAL
                 )
                 
                 """
@@ -91,6 +92,7 @@ class init_db():
                     event_type TEXT,
                     weight REAL,
                     current_stress_score REAL,
+                    stress_reminders REAL,
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
                 )
 
@@ -122,7 +124,9 @@ class Sessions():
             
             'end_time', 
 
-            'overall_stress_score'
+            'overall_stress_score',
+
+            'total_reminders'
 
         ]
 
@@ -173,7 +177,7 @@ class Sessions():
         return session_id
     
 
-    def close_session(self, session_id: int, end_time, overall_stress_score: float = None):
+    def close_session(self, total_reminders, session_id: int, end_time, overall_stress_score: float = None):
 
         # End_time should be a string isoformat format; 'YYYY-MM-DD HH:MM:SS'
 
@@ -191,7 +195,8 @@ class Sessions():
 
             UPDATE sessions
             SET end_time = ?,
-                overall_stress_score = ?
+                overall_stress_score = ?,
+                total_reminders = ?
             WHERE session_id = ?;
 
             """, 
@@ -201,6 +206,8 @@ class Sessions():
                 end_time, 
                 
                 overall_stress_score, 
+
+                total_reminders,
                 
                 session_id
              
@@ -437,7 +444,9 @@ class Events():
 
             'weight', 
 
-            'current_stress_score'
+            'current_stress_score',
+
+            'stress_reminders'
         ]
     
     def report_event(
@@ -464,7 +473,8 @@ class Events():
 
             SELECT
                 current_stress_score,
-                number_in_session
+                number_in_session,
+                stress_reminders
             FROM events
             WHERE session_id = ?
             ORDER BY number_in_session DESC
@@ -478,13 +488,18 @@ class Events():
         row = cursor.fetchone()
 
         if row:
-            current_stress_score, number_in_session = row
+            current_stress_score, number_in_session, stress_reminders = row
         else:
 
             current_stress_score = None
             number_in_session = 0
+            stress_reminders = 0
         
         next_number = number_in_session + 1
+
+        if event_type == "stress_reminder":
+
+            stress_reminders = stress_reminders + 1
 
         stress_score = 0
 
@@ -503,8 +518,8 @@ class Events():
             """
 
             INSERT INTO events
-            (session_id, timestamp, number_in_session, emotion, event_type, weight, current_stress_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (session_id, timestamp, number_in_session, emotion, event_type, weight, current_stress_score, stress_reminders)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             
             """,
 
@@ -516,7 +531,8 @@ class Events():
             emotion, 
             event_type, 
             weight, 
-            stress_score
+            stress_score,
+            stress_reminders
 
         )
 
@@ -547,7 +563,7 @@ class Events():
     
         allowed = {
             'event_id', 'session_id', 'timestamp', 'number_in_session',
-            'emotion', 'event_type', 'weight', 'current_stress_score'
+            'emotion', 'event_type', 'weight', 'current_stress_score', 'stress_reminders'
         }
         if column not in allowed:
             raise ValueError(f"Invalid column: {column}")
@@ -774,6 +790,7 @@ if __name__ == "__main__":
     sessions = Sessions()
     events = Events()
     
-    pprint(sessions.get_all_sessions())
+    
     pprint(events.retrieve_all_events())
+    pprint(sessions.get_all_sessions())
     

@@ -6,45 +6,42 @@ from datetime import date, timedelta
 
 import cv2
 import PySide6
-from PySide6.QtQuickControls2 import QQuickStyle
+
 from PySide6.QtCore import (
-
-    Qt, 
-    QDir, 
-    QObject, 
-    Slot, 
-    Signal,
-    QUrl, 
-    QAbstractListModel, 
-    QModelIndex, Property, QTimer
-
+    Qt, QSize, QPropertyAnimation, QEasingCurve,
+    Property, Signal, QTimer, QUrl,
+    QDir, QObject, Slot, QAbstractListModel, QModelIndex
 )
-
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QImage
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QLabel,
-    QPushButton, QVBoxLayout, QWidget, QMessageBox
+    QApplication, QMainWindow, QLabel, QPushButton,
+    QFrame, QHBoxLayout, QVBoxLayout, QWidget
 )
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
 
 from moodmirror.core.inference import EmotionModel
 from moodmirror.db.api import Sessions, Events
 
-import sys, os
-from PySide6.QtCore import QDir
-
+# ─── 1. Determine BASE_PATH & register search paths ─────────────────────
 if getattr(sys, "frozen", False):
     BASE_PATH = sys._MEIPASS
 else:
     BASE_PATH = os.path.dirname(__file__)
 
-ui_path = os.path.join(BASE_PATH, "ui")
-QDir.addSearchPath("ui", ui_path)
+# QML/UI search paths
+ui_dir = os.path.join(BASE_PATH, "ui")
+assets_dir = os.path.join(BASE_PATH, "assets")
+models_dir = os.path.join(BASE_PATH, "models")
+icons_dir = os.path.join(assets_dir, "icons")
 
-icons_path = os.path.join(BASE_PATH, "assets", "icons")
-QDir.addSearchPath("icons", icons_path)
+QDir.addSearchPath("ui",     ui_dir)
+QDir.addSearchPath("assets", assets_dir)
+QDir.addSearchPath("models", models_dir)
+QDir.addSearchPath("icons",  icons_dir)
 
-# ─── 1. QQuick style & Qt DLL path ────────────────────────────────────────
+# ─── 2. QQuick style & DLL path ──────────────────────────────────────────
 QQuickStyle.setStyle("Basic")
 
 pyside_dir = Path(PySide6.__file__).parent
@@ -52,40 +49,26 @@ os.environ["PATH"] = str(pyside_dir) + os.pathsep + os.environ.get("PATH", "")
 if hasattr(os, "add_dll_directory"):
     os.add_dll_directory(str(pyside_dir))
 
-# ─── 2. Resource path helper ─────────────────────────────────────────────
+# ─── 3. Resource‐path helper ─────────────────────────────────────────────
 def resource_path(*parts: str) -> Path:
-    """
-    Absolute path to bundled resources, handling development and PyInstaller.
-    """
     base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).parent
     return base.joinpath(*parts)
 
-# ─── 3. Define key directories ────────────────────────────────────────────
 USERNAME_FILE = resource_path("data", "username.txt")
-UI_DIR        = resource_path("ui")
-ASSETS_DIR    = resource_path("assets")
-MODELS_DIR    = resource_path("models")
 
-# ─── 4. QML search paths ──────────────────────────────────────────────────
-QDir.addSearchPath("ui",     str(UI_DIR))
-QDir.addSearchPath("assets", str(ASSETS_DIR))
-QDir.addSearchPath("models", str(MODELS_DIR))
 
-# ─── 5. Stress data model ─────────────────────────────────────────────────
+# ─── 4. Stress data model ────────────────────────────────────────────────
 class StressEntry:
     def __init__(self, date_str: str, score: float):
         self.date = date_str
         self.score = score
 
 class StressModel(QAbstractListModel):
-
     DateRole  = Qt.UserRole + 1
     ScoreRole = Qt.UserRole + 2
 
     def __init__(self, parent=None):
-
         super().__init__(parent)
-
         self._entries = []
         self.load_dummy_last_7_days()
 
@@ -115,11 +98,13 @@ class StressModel(QAbstractListModel):
             StressEntry(
                 (today - timedelta(days=6 - i)).strftime("%b %d"),
                 (i * 13 + 25) % 100
-            ) for i in range(7)
+            )
+            for i in range(7)
         ]
         self.endResetModel()
 
-# ─── 6. Backend for userName binding ─────────────────────────────────────
+
+# ─── 5. Backend for userName binding ─────────────────────────────────────
 class Backend(QObject):
     userNameChanged = Signal()
 
@@ -140,82 +125,260 @@ class Backend(QObject):
         USERNAME_FILE.write_text(name)
         self.userNameChanged.emit()
 
-# ─── 7. Main camera + inference window ──────────────────────────────────
-class MoodMirrorWindow(QMainWindow):
 
-    def __init__(self, model: EmotionModel):
-        # keep session object around but don’t start it yet
+# ─── 6. AnimatedIconButton ───────────────────────────────────────────────
+class AnimatedIconButton(QPushButton):
+    bgColorChanged     = Signal()
+    borderColorChanged = Signal()
+    scaleChanged       = Signal()
+
+    def __init__(
+        self,
+        icon_off_path: str,
+        icon_on_path: str,
+        base_size: QSize,
+        icon_size: QSize,
+        off_bg: QColor,
+        off_border: QColor,
+        on_bg: QColor,
+        on_border: QColor,
+        parent=None
+    ):
+        super().__init__(parent)
+
+        # store geometry parameters
+        self.base_size = base_size
+        self.icon_size = icon_size
+        self._margin   = 10   # px padding so scaling never crops
+        total = QSize(
+            base_size.width()  + 2*self._margin,
+            base_size.height() + 2*self._margin
+        )
+        self.setFixedSize(total)
+
+        # load white icons
+        self.icon_off = self._make_white_icon(icon_off_path, icon_size)
+        self.icon_on  = self._make_white_icon(icon_on_path,  icon_size)
+        self.setIcon(self.icon_off)
+        self.setIconSize(self.icon_size)
+
+        # initial colors & scale
+        self.off_bg,      self.off_border   = off_bg,     off_border
+        self.on_bg,       self.on_border    = on_bg,      on_border
+        self._bgColor     = self.off_bg
+        self._borderColor = self.off_border
+        self._scale       = 1.0
+        self._max_scale   = 1.2
+
+        # appearance & state
+        self.setFlat(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setCheckable(True)
+        self.toggled.connect(self._on_toggled)
+
+        # animations
+        self.anim_scale  = QPropertyAnimation(self, b"scale",       self)
+        self.anim_bg     = QPropertyAnimation(self, b"bgColor",     self)
+        self.anim_border = QPropertyAnimation(self, b"borderColor", self)
+        for anim in (self.anim_scale, self.anim_bg, self.anim_border):
+            anim.setDuration(500)
+            anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+    def _make_white_icon(self, svg_path: str, size: QSize) -> QIcon:
+        svg  = QSvgRenderer(svg_path)
+        base = QPixmap(size)
+        base.fill(Qt.transparent)
+        p    = QPainter(base)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        svg.render(p)
+        p.end()
+        mask  = base.createMaskFromColor(Qt.transparent)
+        white = QPixmap(size)
+        white.fill(Qt.white)
+        white.setMask(mask)
+        return QIcon(white)
+
+    def enterEvent(self, event):
+        self.anim_scale.stop()
+        self.anim_scale.setStartValue(self._scale)
+        self.anim_scale.setEndValue(self._max_scale)
+        self.anim_scale.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.anim_scale.stop()
+        self.anim_scale.setStartValue(self._scale)
+        self.anim_scale.setEndValue(1.0)
+        self.anim_scale.start()
+        super().leaveEvent(event)
+
+    def _on_toggled(self, checked: bool):
+        # swap icon
+        # bg color animation
+        self.anim_bg.stop()
+        self.anim_bg.setStartValue(self._bgColor)
+        self.anim_bg.setEndValue(self.on_bg if checked else self.off_bg)
+        self.anim_bg.start()
+        
+        # border color animation
+        self.anim_border.stop()
+        self.anim_border.setStartValue(self._borderColor)
+        self.anim_border.setEndValue(self.on_border if checked else self.off_border)
+        self.anim_border.start()
+
+        self.setIcon(self.icon_on if checked else self.icon_off)
+
+
+    @Property(float, notify=scaleChanged)
+    def scale(self) -> float:
+        return self._scale
+
+    @scale.setter
+    def scale(self, s: float):
+        self._scale = s
+        self.scaleChanged.emit()
+        self.update()
+
+    @Property(QColor, notify=bgColorChanged)
+    def bgColor(self) -> QColor:
+        return self._bgColor
+
+    @bgColor.setter
+    def bgColor(self, c: QColor):
+        self._bgColor = c
+        self.bgColorChanged.emit()
+        self.update()
+
+    @Property(QColor, notify=borderColorChanged)
+    def borderColor(self) -> QColor:
+        return self._borderColor
+
+    @borderColor.setter
+    def borderColor(self, c: QColor):
+        self._borderColor = c
+        self.borderColorChanged.emit()
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        W, H = self.width(), self.height()
+        cx, cy = W/2, H/2
+
+        # draw scaled circle
+        bw, bh = self.base_size.width(), self.base_size.height()
+        rw, rh = bw*self._scale, bh*self._scale
+        x0, y0 = cx - rw/2, cy - rh/2
+
+        pen = QPen(self._borderColor)
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(self._bgColor)
+        painter.drawEllipse(int(x0), int(y0), int(rw), int(rh))
+
+        # draw scaled icon
+        pix = self.icon().pixmap(self.icon_size)
+        if not pix.isNull():
+            iw, ih = pix.width()*self._scale, pix.height()*self._scale
+            pix = pix.scaled(int(iw), int(ih), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            px = cx - pix.width()/2
+            py = cy - pix.height()/2
+            painter.drawPixmap(int(px), int(py), pix)
+
+        painter.end()
+
+
+# ─── 7. Main camera + inference window ─────────────────────────────────
+class MoodMirrorWindow(QMainWindow):
+    def __init__(self, model: EmotionModel, app_controller, parent=None):
+        super().__init__(parent)           
+        self._app_controller = app_controller
+        self.setWindowTitle("Mood Mirror")
+        self.model   = model
         self.session = Sessions()
         self.events  = Events()
-
         self.weights = {
-            
-            "angry": 1, 
-            
-            "disgust": .3, 
-            
-            "fear": .7,
-        
-            "happy": 0, 
-            
-            "neutral": .2, 
-            
-            "sad": 1, 
-            
+            "angry": 1, "disgust": .3, "fear": .7,
+            "happy": 0, "neutral": .2, "sad": 1,
             "surprise": "no effect"
-
         }
 
-        super().__init__()
-        self.setWindowTitle("Mood Mirror")
-
-        self.model        = model
-        self.current_frame = None
         self.call_active   = False
         self.paused        = False
+        self.current_frame = None
 
-        # ——— video display ———
+        # icon target sizes
+        self.icon_size_small = QSize(32, 32)
+        self.icon_size_large = QSize(40, 40)
+
+        # ── Video display ───────────────────────────────────────
         self.video_label = QLabel(alignment=Qt.AlignCenter)
-        # rounded corners + black border
-        self.video_label.setStyleSheet(
-            "border:2px solid black; "
-            "border-radius:15px;"
-        )
+        self.video_label.setStyleSheet("""
+            background-color: black;
+            border: 2px solid #000;
+            border-radius: 15px;
+        """)
 
-        
-        self.call_button = QPushButton("Call")
-        self.call_button.setCheckable(True)
+        # ── Buttons ─────────────────────────────────────────────
+        small_btn = QSize(60, 60)
+        large_btn = QSize(80, 80)
+
+        self.call_button = AnimatedIconButton(
+            "icons:call_start.svg", "icons:call_end.svg",
+            small_btn, self.icon_size_small,
+            QColor(0,0,0,0), QColor(255,255,255),
+            QColor(231,76,60), QColor(255,255,255),
+            parent=self
+        )
         self.call_button.toggled.connect(self.toggle_call)
 
-        self.pause_button = QPushButton("Pause")
-        self.pause_button.setCheckable(True)
+        self.record_button = AnimatedIconButton(
+            "icons:video.svg", "icons:video_start.svg",
+            large_btn, self.icon_size_large,
+            QColor(0,0,0,0), QColor(255,255,255),
+            QColor(231,76,60), QColor(255,255,255),
+            parent=self
+        )
+        self.record_button.toggled.connect(self.toggle_record)
+
+        self.pause_button = AnimatedIconButton(
+            "icons:pause.svg", "icons:resume.svg",
+            small_btn, self.icon_size_small,
+            QColor(0,0,0,0), QColor(255,255,255),
+            QColor(231,76,60), QColor(255,255,255),
+            parent=self
+        )
         self.pause_button.toggled.connect(self.toggle_pause)
 
-        self.start_button = QPushButton("Start Session")
-        self.start_button.setCheckable(True)
-        self.start_button.setStyleSheet("background-color:red; color:white;")
-        self.start_button.toggled.connect(self.toggle_session)
+        # ── Bottom panel ────────────────────────────────────────
+        bottom = QFrame()
+        bottom.setStyleSheet("background-color: #2f2f2f;")
+        layout = QHBoxLayout(bottom)
+        layout.setContentsMargins(20, 10, 20, 10)
+        layout.setSpacing(20)  # +10px space between buttons
+        layout.addStretch(1)
+        layout.addWidget(self.call_button)
+        layout.addWidget(self.record_button)
+        layout.addWidget(self.pause_button)
+        layout.addStretch(1)
 
-        container = QWidget()
+        # ── Main layout ─────────────────────────────────────────
+        container   = QWidget()
         main_layout = QVBoxLayout(container)
-
-        row = QVBoxLayout()
-        row.addWidget(self.call_button)
-        row.addWidget(self.video_label, 1)  
-        row.addWidget(self.pause_button)
-        main_layout.addLayout(row)
-
-        main_layout.addWidget(self.start_button, alignment=Qt.AlignCenter)
-
+        main_layout.addWidget(self.video_label, stretch=1)
+        main_layout.addWidget(bottom,         stretch=0)
         self.setCentralWidget(container)
 
-        self.cap   = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_frame)
-        self.timer.start(30)  # ~33 FPS
+        # ── Video capture & timers ──────────────────────────────
+        self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        self.frame_timer = QTimer(self)
+        self.frame_timer.timeout.connect(self.update_frame)
+        self.frame_timer.start(30)
 
         self.inference_timer = QTimer(self)
-        self.inference_timer.setInterval(500)
+        self.inference_timer.setInterval(100)
         self.inference_timer.timeout.connect(self.run_inference)
 
     def update_frame(self):
@@ -223,172 +386,126 @@ class MoodMirrorWindow(QMainWindow):
         if not ret:
             return
 
-        # convert & detect
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         if hasattr(self.model, "net"):
             faces = self.model._detect_faces_dnn(rgb, conf_threshold=0.5)
         else:
-            gray  = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
             faces = self.model.face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(50,50))
 
-        # draw boxes on a copy
         vis = rgb.copy()
         for x, y, w, h in faces:
             cv2.rectangle(vis, (x, y), (x+w, y+h), (255,0,0), 2)
-
-        # keep the un-blurred frame for inference
         self.current_frame = vis
 
-        # apply light blur if on a “call”
-        display = vis
-        if self.call_active:
-            display = cv2.GaussianBlur(vis, (15,15), 0)
-
-        # show it
+        display = cv2.GaussianBlur(vis, (15,15), 0) if self.call_active else vis
         h, w, ch = display.shape
         img = QImage(display.data, w, h, ch*w, QImage.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(img))
 
-    def toggle_session(self, active: bool):
+    def toggle_call(self, on: bool):
+        self.call_active = on
 
-        if active:
+    def toggle_pause(self, paused: bool):
+        self.paused = paused
+        if paused:
+            self.inference_timer.stop()
+        elif self.record_button.isChecked():
+            self.inference_timer.start()
+
+    def toggle_record(self, recording: bool):
+
+        if recording:
 
             self.session_id = self.session.create_session()
             self.inference_timer.start()
-            self.start_button.setText("Stop Session")
 
-            self.start_button.setStyleSheet("background-color:green; color:white;")
+        else:
         
-        else:
-
             self.inference_timer.stop()
 
-            self.session.close_session(self.session_id, None, self.events.get_max_number_in_session(self.session_id)[7])
-
-            self.close()
-
-            if hasattr(self, "_welcome_engine"):
-                for obj in self._welcome_engine.rootObjects():
-                    obj.setProperty("visible", False)
-
-            self._dash_engine = QQmlApplicationEngine()
-            dash_ctxt = self._dash_engine.rootContext()
-            dash_ctxt.setContextProperty("stressModel", self.stressModel)
-            dash_ctxt.setContextProperty("controller",   self)
-            self._dash_engine.load(QUrl("ui:Dashboard.qml"))
-
-    def toggle_pause(self, paused: bool):
-
-        self.paused = paused
-
-        if paused:
-
-            self.inference_timer.stop()
-            self.pause_button.setText("Resume")
-
-        else:
-
-            self.inference_timer.start()
-            self.pause_button.setText("Pause")
-
+            row = self.events.get_max_number_in_session(self.session_id)
             
+            stress_score, stress_reminder = row[7], row[8]
 
-
-    def toggle_call(self, calling: bool):
-
-        self.call_active = calling
-
-        if calling:
-            self.call_button.setText("End Call")
-        else:
-            self.call_button.setText("Call")
+            self.session.close_session(stress_reminder, self.session_id, None, stress_score)
+            self._switch_to_dashboard()
 
     def run_inference(self):
 
         if self.current_frame is None:
-
             return
-        
         label = self.model.predict(self.current_frame)
+        evt   = "call" if self.call_active else "regular"
 
-        if self.call_active == True:
+        print("frame_recorded")
 
-            event_type = "call"
+        if label not in ("surprise", "no_face_detected"):
+            self.events.report_event(
+                self.session_id, label, evt,
+                weight=self.weights[label]
+            )
 
-        else:
-
-            event_type = "regular"
-
-        if label != "surprise" and label != "no_face_detected":
-
-            self.events.report_event(self.session_id, label, event_type, weight=self.weights[label])
-
+    def _switch_to_dashboard(self):
+        self.close()
+        if hasattr(self, "_welcome_engine"):
+            for o in self._welcome_engine.rootObjects():
+                o.setProperty("visible", False)
+        dash = QQmlApplicationEngine()
+        ctxt = dash.rootContext()
+        ctxt.setContextProperty("stressModel", getattr(self, "stressModel", None))
+        ctxt.setContextProperty("controller",   self)
+        dash.load(QUrl("ui:Dashboard.qml"))
+        self._dash_engine = dash
 
     def closeEvent(self, event):
-
         self.cap.release()
-
         super().closeEvent(event)
 
 
 # ─── 8. QML controller ───────────────────────────────────────────────────
 class AppController(QObject):
     def __init__(self, engine: QQmlApplicationEngine):
-
         super().__init__()
-
         self._welcome_engine = engine
-        self.model = EmotionModel()
-        self.stressModel = StressModel()
-        self._dash_engine = None
-        self._inference = None
+        self.model          = EmotionModel()
+        self.stressModel    = StressModel()
+        self._dash_engine   = None
+        self._inference     = None
 
     @Slot()
-
     def continueToApp(self):
-
-        print("Got Button Click")           # <-- should appear in console
-        # hide welcome…
         for obj in self._welcome_engine.rootObjects():
             obj.setProperty("visible", False)
-        # load dashboard…
-        self._dash_engine = QQmlApplicationEngine()
-        dash_ctxt = self._dash_engine.rootContext()
-        dash_ctxt.setContextProperty("stressModel", self.stressModel)
-        dash_ctxt.setContextProperty("controller",   self)
-        self._dash_engine.load("ui:Dashboard.qml")
+        dash = QQmlApplicationEngine()
+        ctxt = dash.rootContext()
+        ctxt.setContextProperty("stressModel", self.stressModel)
+        ctxt.setContextProperty("controller",   self)
+        dash.load("ui:Dashboard.qml")
+        self._dash_engine = dash
 
     @Slot()
     def startWorkSession(self):
-        win = MoodMirrorWindow(self.model)
+        win = MoodMirrorWindow(self.model, app_controller=self)
         win.resize(800, 600)
         win.show()
         self._inference = win
 
+
 # ─── 9. Entry point ─────────────────────────────────────────────────────
 def main():
-
     app = QApplication(sys.argv)
-    engine = QQmlApplicationEngine()
-
-    from PySide6.QtGui     import QIcon
-
-    
     app.setWindowIcon(QIcon("icons:favicon.ico"))
 
+    backend    = Backend()
+    controller = AppController(QQmlApplicationEngine())
 
-    backend = Backend()
-    controller = AppController(engine)
-
-    ctxt = engine.rootContext()
+    ctxt = controller._welcome_engine.rootContext()
     ctxt.setContextProperty("backend",    backend)
     ctxt.setContextProperty("controller", controller)
+    controller._welcome_engine.load("ui:WelcomePage.qml")
 
-    engine.load("ui:WelcomePage.qml")
-
-
-
-    if not engine.rootObjects():
+    if not controller._welcome_engine.rootObjects():
         sys.exit(-1)
     sys.exit(app.exec())
 
