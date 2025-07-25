@@ -70,7 +70,11 @@ class StressModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._entries = []
-        self.load_dummy_last_7_days()
+        self.sessions = Sessions()
+        self.events = Events()
+        self._time_range_days = 7
+        self._metric = "Stress score"
+        self.load_from_db()
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return len(self._entries)
@@ -91,17 +95,55 @@ class StressModel(QAbstractListModel):
             StressModel.ScoreRole: b"score",
         }
 
-    def load_dummy_last_7_days(self):
-        today = date.today()
+    @Slot(int, str)
+    def reload(self, time_range_index: int, metric: str):
+        # Map index to days
+        days_map = [7, 30, 90, 180, 10000]  # 10000 = all time
+        self._time_range_days = days_map[time_range_index]
+        self._metric = metric
+        self.load_from_db()
+
+    def load_from_db(self):
+        # Get sessions in range
+        if self._time_range_days >= 10000:
+            sessions = self.sessions.get_all_sessions()
+        else:
+            sessions = self.sessions.get_sessions_in_last_x_days(self._time_range_days)
+        # Aggregate by day
+        day_map = {}
+        for sess in sessions:
+            # session: (session_id, day, start_time, end_time, overall_stress_score, total_reminders)
+            day = sess[1]
+            if day not in day_map:
+                day_map[day] = {"stress": [], "reminders": 0}
+            if sess[4] is not None:
+                day_map[day]["stress"].append(sess[4])
+            if sess[5] is not None:
+                day_map[day]["reminders"] += int(sess[5])
+        # Build entries for each day in range
+        days = sorted(day_map.keys())
         self.beginResetModel()
-        self._entries = [
-            StressEntry(
-                (today - timedelta(days=6 - i)).strftime("%b %d"),
-                (i * 13 + 25) % 100
-            )
-            for i in range(7)
-        ]
+        self._entries = []
+        for d in days:
+            if self._metric == "Stress score":
+                vals = day_map[d]["stress"]
+                score = sum(vals)/len(vals) if vals else 0
+            else:
+                score = day_map[d]["reminders"]
+            # Format date as 'Mon DD'
+            try:
+                date_str = date.fromisoformat(d).strftime("%b %d")
+            except Exception:
+                date_str = d
+            self._entries.append(StressEntry(date_str, score))
         self.endResetModel()
+
+    @Slot(int, result='QVariant')
+    def get(self, index):
+        if 0 <= index < len(self._entries):
+            entry = self._entries[index]
+            return {"date": entry.date, "score": entry.score}
+        return None
 
 
 # ─── 5. Backend for userName binding ─────────────────────────────────────

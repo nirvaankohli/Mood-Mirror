@@ -34,6 +34,7 @@ ApplicationWindow {
                     Layout.alignment: Qt.AlignVCenter | Qt.AlignLeft
                     background: Rectangle { color: "#4a4a4a"; radius: 8 }
                     contentItem: Text { text: timeRangeCombo.currentText; color: "#ffffff"; font.pixelSize: 14 }
+                    onCurrentIndexChanged: stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
                 }
 
                 // Spacer to center the title
@@ -59,6 +60,7 @@ ApplicationWindow {
                     Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
                     background: Rectangle { color: "#4a4a4a"; radius: 8 }
                     contentItem: Text { text: metricCombo.currentText; color: "#ffffff"; font.pixelSize: 14 }
+                    onCurrentIndexChanged: stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
                 }
             }
         }
@@ -66,25 +68,34 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 12
-            Layout.margins: 16
+            spacing: 24
+            Layout.margins: 24
 
-            // ◀ Left stats panel
             Frame {
-                Layout.preferredWidth: 160
+
+                Layout.preferredWidth: 180
+                
                 Layout.fillHeight: true
-                background: Rectangle { color: "#3a3a3a"; radius: 12 }
+
+                background: Rectangle { color: "#23272e"; radius: 18 }
+
                 Column {
+
                     anchors.centerIn: parent
-                    spacing: 8
-                    Text { text: "Avg Stress"; font.pointSize: 14; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter }
+                    spacing: 12
+
+                    Text { text: "Avg Stress"; font.pointSize: 16; color: "#b0b8c1"; horizontalAlignment: Text.AlignHCenter }
+                    
                     Text {
-                        font.pointSize: 24
-                        color: "#ffffff"
+
+                        font.pointSize: 32
+                        color: "#00b894"
+                        font.bold: true
                         horizontalAlignment: Text.AlignHCenter
+
                         text: {
                             var sum = 0; for (var i = 0; i < stressModel.rowCount(); ++i) sum += stressModel.get(i).score;
-                            return (sum / stressModel.rowCount()).toFixed(1) + "%";
+                            return (sum / Math.max(1, stressModel.rowCount())).toFixed(1);
                         }
                     }
                 }
@@ -92,40 +103,138 @@ ApplicationWindow {
 
             // ▼ Center: Chart + Red Button
             Item {
+
                 Layout.fillWidth: true
                 Layout.fillHeight: true
 
-                ChartView {
+                Rectangle {
+
                     anchors.fill: parent
-                    antialiasing: true
-                    // Chart background
-                    backgroundColor: "#1e1e1e"
 
-                    BarCategoryAxis { id: xAxis; categories: stressModel.date; labelsColor: "#ffffff" }
-                    ValueAxis { id: yAxis; min: 0; max: 100; labelsColor: "#ffffff" }
-                    BarSeries { axisX: xAxis; axisY: yAxis; BarSet { label: "Stress"; values: stressModel.score } }
+                    color: "#23272e"
+
+                    radius: 24
+
+                    border.color: "#353b48"
+                    border.width: 2
+
+                    anchors.margins: 8
+
+                    ChartView {
+
+                        anchors.fill: parent
+                        anchors.margins: 24
+
+                        antialiasing: true
+
+                        backgroundColor: "#23272e"
+                        plotAreaColor: "#23272e"
+
+                        legend.visible: false
+                        theme: ChartView.ChartThemeDark
+
+                        BarSeries {
+
+                            id: barSeries
+
+                            BarSet { label: "Stress" }
+
+                            axisX: xAxis
+                            axisY: yAxis
+
+                        }
+
+                        BarCategoryAxis {
+
+                            id: xAxis
+
+                            labelsColor: "#b0b8c1"
+
+                            gridVisible: false
+
+                        }
+
+                        ValueAxis {
+
+                            id: yAxis
+
+                            min: 0
+                            max: 100
+
+                            labelsColor: "#b0b8c1"
+                            gridLineColor: "#353b48"
+
+                            gridVisible: true
+                            minorTickCount: 1
+
+                        }
+
+                        VBarModelMapper {
+
+                            id: barMapper
+                            model: stressModel
+
+                            firstBarSetColumn: 1
+                            lastBarSetColumn: 1
+
+                            firstRow: 0
+
+                            rowCount: stressModel.rowCount()
+
+                            series: barSeries
+
+                        }
+
+                        function updateCategories() {
+
+                            var categories = [];
+
+                            for (var i = 0; i < stressModel.rowCount(); ++i)
+
+                                categories.push(stressModel.get(i).date);
+
+                            xAxis.categories = categories;
+
+                        }
+
+                        Connections {
+
+                            target: stressModel
+
+                            function onModelReset() { updateCategories(); }
+                        }
+                        
+                        Component.onCompleted: updateCategories()
+                    }
+                    // Contrasting ring
+                    Rectangle {
+                        id: ring
+                        width: 160; height: 160; radius: 80
+                        color: "#1e2329"
+                        anchors.centerIn: parent
+                        border.color: "#00b894"
+                        border.width: 3
+                    }
+                    // Record button
+                    Rectangle {
+                        id: startBtn
+                        width: 130; height: 130; radius: 65
+                        color: "#e74c3c"
+                        anchors.centerIn: parent
+                        border.color: "#fff"
+                        border.width: 2
+                        MouseArea { anchors.fill: parent; onClicked: controller.startWorkSession() }
+                        Text {
+                            text: "Start\nSession"
+                            font.pixelSize: 16; color: "#fff"
+                            anchors.centerIn: parent
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                    }
                 }
-
-                // Contrasting ring
-                Rectangle {
-                    id: ring
-                    width: 160; height: 160; radius: 80
-                    color: "#262626"
-                    anchors.centerIn: parent
-                }
-
-                // Record button
-                Rectangle {
-                    id: startBtn
-                    width: 130; height: 130; radius: 65
-                    color: "#e74c3c"
-                    anchors.centerIn: parent
-                    MouseArea { anchors.fill: parent; onClicked: controller.startWorkSession() }
-                }
-
                 Text {
                     text: "Start Today's\nWork Session"
-                    font.pixelSize: 14; color: "#ffffff"
+                    font.pixelSize: 14; color: "#b0b8c1"
                     horizontalAlignment: Text.AlignHCenter
                     anchors.horizontalCenter: startBtn.horizontalCenter
                     anchors.top: startBtn.bottom; anchors.topMargin: 8
@@ -134,18 +243,18 @@ ApplicationWindow {
 
             // ▶ Right stats panel
             Frame {
-                Layout.preferredWidth: 160
+                Layout.preferredWidth: 180
                 Layout.fillHeight: true
-                background: Rectangle { color: "#3a3a3a"; radius: 12 }
+                background: Rectangle { color: "#23272e"; radius: 18 }
                 Column {
                     anchors.centerIn: parent
-                    spacing: 8
-                    Text { text: "Max Stress"; font.pointSize: 14; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter }
+                    spacing: 12
+                    Text { text: "Max Stress"; font.pointSize: 16; color: "#b0b8c1"; horizontalAlignment: Text.AlignHCenter }
                     Text {
-                        font.pointSize: 24; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter
+                        font.pointSize: 32; color: "#e17055"; font.bold: true; horizontalAlignment: Text.AlignHCenter
                         text: {
                             var m = 0; for (var i = 0; i < stressModel.rowCount(); ++i) m = Math.max(m, stressModel.get(i).score);
-                            return m + "%";
+                            return Math.round(m / 100) * 100;
                         }
                     }
                 }
@@ -167,6 +276,14 @@ ApplicationWindow {
                 Button { text: "History"; background: Rectangle { color: "#3a3a3a"; radius: 8 } }
                 Button { text: "Settings"; background: Rectangle { color: "#3a3a3a"; radius: 8 } }
                 Button { text: "Help"; background: Rectangle { color: "#3a3a3a"; radius: 8 } }
+                Button {
+                    text: "Debug Model"
+                    onClicked: {
+                        console.log("Row count:", stressModel.rowCount());
+                        for (var i = 0; i < stressModel.rowCount(); ++i)
+                            console.log("Entry", i, "date:", stressModel.get(i).date, "score:", stressModel.get(i).score);
+                    }
+                }
             }
         }
     }
