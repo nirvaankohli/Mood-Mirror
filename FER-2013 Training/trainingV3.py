@@ -18,10 +18,12 @@ from tqdm import tqdm
 
 
 def set_seed(seed: int):
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -241,7 +243,9 @@ def main():
 
         print(f"\n=== Epoch {epoch}/{args.epochs} ===")
 
-        tloss, tacc = train_one_epoch(model, 
+        tloss, tacc = train_one_epoch(
+            
+            model, 
                                       train_loader,
                                       optimizer, 
                                       criterion,
@@ -261,10 +265,31 @@ def main():
         writer.add_scalars("Acc",  {"train": tacc,  "val": vacc}, epoch)
         writer.add_scalar("LR", lr_now, epoch)
 
-        with open(csv_path, "a", newline="") as f:
+        with open(csv_path, 
+                  
+                  "a", 
+                  
+                  newline=""
+                  
+                  ) as f:
 
-            csv.writer(f).writerow([epoch, f"{tloss:.4f}", f"{tacc:.2f}",
-                                     f"{vloss:.4f}", f"{vacc:.2f}", f"{lr_now:.6f}"])
+            csv.writer(f).writerow(
+                
+                [epoch, 
+                 
+                 f"{tloss:.4f}", 
+                 
+                f"{tacc:.2f}",
+                
+                f"{vloss:.4f}", 
+                
+                f"{vacc:.2f}", 
+
+                f"{lr_now:.6f}"
+                
+                ]
+                
+                )
 
         if vacc > best_acc:
             
@@ -273,6 +298,7 @@ def main():
             torch.save({
 
                 "model": model.state_dict(),
+                
                 "opt":   optimizer.state_dict(),
                 "sched": scheduler.state_dict(),
                 "epoch": epoch,
@@ -298,4 +324,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
