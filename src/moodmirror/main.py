@@ -2,7 +2,8 @@
 import sys
 import os
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
+from collections import deque
 
 import cv2
 import PySide6
@@ -16,13 +17,14 @@ from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QImage
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QPushButton,
-    QFrame, QHBoxLayout, QVBoxLayout, QWidget
+    QFrame, QHBoxLayout, QVBoxLayout, QWidget,
+    QMessageBox
 )
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
-from moodmirror.core.inference import EmotionModel
-from moodmirror.db.api import Sessions, Events
+from .core.inference import EmotionModel
+from .db.api import Sessions, Events
 
 # ─── 1. Determine BASE_PATH & register search paths ─────────────────────
 if getattr(sys, "frozen", False):
@@ -84,8 +86,10 @@ class StressModel(QAbstractListModel):
             return None
         entry = self._entries[index.row()]
         if role == StressModel.DateRole:
+            print(f"DEBUG: data() called for row {index.row()}, DateRole returning: '{entry.date}'")
             return entry.date
         if role == StressModel.ScoreRole:
+            print(f"DEBUG: data() called for row {index.row()}, ScoreRole returning: {entry.score}")
             return entry.score
         return None
 
@@ -97,18 +101,24 @@ class StressModel(QAbstractListModel):
 
     @Slot(int, str)
     def reload(self, time_range_index: int, metric: str):
-        # Map index to days
-        days_map = [7, 30, 90, 180, 10000]  # 10000 = all time
+        # Map index to days - 0 = today, 1 = 7 days, 2 = 30 days, etc.
+        days_map = [0, 7, 30, 90, 180, 10000]  # 0 = today, 10000 = all time
         self._time_range_days = days_map[time_range_index]
         self._metric = metric
         self.load_from_db()
 
     def load_from_db(self):
         # Get sessions in range
-        if self._time_range_days >= 10000:
+        if self._time_range_days == 0:  # Today only
+            sessions = self.sessions.get_sessions_for_today()
+            # For today, we'll show individual events with timestamps
+            self.load_today_events()
+            return
+        elif self._time_range_days >= 10000:
             sessions = self.sessions.get_all_sessions()
         else:
             sessions = self.sessions.get_sessions_in_last_x_days(self._time_range_days)
+        
         # Aggregate by day
         day_map = {}
         for sess in sessions:
@@ -120,29 +130,180 @@ class StressModel(QAbstractListModel):
                 day_map[day]["stress"].append(sess[4])
             if sess[5] is not None:
                 day_map[day]["reminders"] += int(sess[5])
+        
         # Build entries for each day in range
         days = sorted(day_map.keys())
         self.beginResetModel()
         self._entries = []
+        print(f"DEBUG: Building entries for {len(days)} days")
         for d in days:
             if self._metric == "Stress score":
                 vals = day_map[d]["stress"]
                 score = sum(vals)/len(vals) if vals else 0
             else:
                 score = day_map[d]["reminders"]
-            # Format date as 'Mon DD'
+            # Format date as 'Mon DD' or 'Today' for today
             try:
-                date_str = date.fromisoformat(d).strftime("%b %d")
+                if d == date.today().isoformat():
+                    date_str = "Today"
+                else:
+                    date_str = date.fromisoformat(d).strftime("%b %d")
             except Exception:
                 date_str = d
-            self._entries.append(StressEntry(date_str, score))
+            entry = StressEntry(date_str, score)
+            self._entries.append(entry)
+            print(f"DEBUG: Added entry - date: '{entry.date}', score: {entry.score}")
+        print(f"DEBUG: Total entries: {len(self._entries)}")
+        self.endResetModel()
+
+    def load_today_events(self):
+
+        today = date.today().isoformat()
+        
+        # Get all events from today's sessions
+
+        sessions = self.sessions.get_sessions_for_today()
+        session_ids = [s[0] for s in sessions]
+        
+        if not session_ids:
+
+            self.beginResetModel()
+            self._entries = []
+            self.endResetModel()
+
+            return
+        
+        # Get events for today's sessions
+
+        conn = self.events.db.get_connection()
+        cursor = conn.cursor()
+        
+        placeholders = ','.join(['?' for _ in session_ids])
+        
+        cursor.execute(f"""
+
+            SELECT timestamp, current_stress_score, stress_reminders
+            FROM events 
+            WHERE session_id IN ({placeholders})
+            ORDER BY timestamp ASC
+
+        """, 
+
+        session_ids
+
+        )
+        
+        events = cursor.fetchall()
+        conn.close()
+        
+        # Group events by hour for better visualization
+
+        hour_map = {}
+
+        for event in events:
+
+            timestamp_str = event[0]
+            stress_score = event[1] or 0
+            reminders = event[2] or 0
+            
+            try:
+
+                # Parse timestamp and get hour
+
+                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                hour_key = dt.strftime("%H:00")
+                
+                if hour_key not in hour_map:
+
+                    hour_map[hour_key] = {"stress": [], "reminders": 0}
+                
+                hour_map[hour_key]["stress"].append(stress_score)
+                hour_map[hour_key]["reminders"] += reminders
+
+            except Exception:
+
+                continue
+        
+        # Build entries for each hour
+
+        self.beginResetModel()
+        self._entries = []
+
+        print(f"DEBUG: Building entries for {len(hour_map)} hours")
+
+        for hour in sorted(hour_map.keys()):
+
+            if self._metric == "Stress score":
+
+                vals = hour_map[hour]["stress"]
+                score = sum(vals)/len(vals) if vals else 0
+
+            else:
+                score = hour_map[hour]["reminders"]
+            
+            entry = StressEntry(hour, score)
+            self._entries.append(entry)
+
+            print(f"DEBUG: Added entry - date: '{entry.date}', score: {entry.score}")
+        
+        print(f"DEBUG: Total entries: {len(self._entries)}")
+
         self.endResetModel()
 
     @Slot(int, result='QVariant')
+
     def get(self, index):
+
         if 0 <= index < len(self._entries):
+
             entry = self._entries[index]
+
             return {"date": entry.date, "score": entry.score}
+
+        return None
+
+    @Slot(result='QVariant')
+
+    def get_max_stress_session(self):
+        
+        """Get the session with the highest stress score in the current time range"""
+        
+        if self._time_range_days == 0:
+
+            sessions = self.sessions.get_sessions_for_today()
+
+        elif self._time_range_days >= 10000:
+
+            sessions = self.sessions.get_all_sessions()
+
+        else:
+
+            sessions = self.sessions.get_sessions_in_last_x_days(self._time_range_days)
+        
+        max_stress = 0
+        max_session = None
+
+        for sess in sessions:
+
+            if sess[4] is not None and sess[4] > max_stress:
+
+                max_stress = sess[4]
+                max_session = sess
+        
+        if max_session:
+
+            return {
+
+                "session_id": max_session[0],
+
+                "day": max_session[1],
+
+                "stress_score": max_stress,
+
+                "start_time": max_session[2]
+        
+            }
+
         return None
 
 
@@ -334,36 +495,60 @@ class AnimatedIconButton(QPushButton):
 
 # ─── 7. Main camera + inference window ─────────────────────────────────
 class MoodMirrorWindow(QMainWindow):
-    def __init__(self, model: EmotionModel, app_controller, parent=None):
-        super().__init__(parent)           
+    def __init__(self, model: EmotionModel, app_controller, stress_model=None, parent=None):
+        
+        super().__init__(parent) 
+
         self._app_controller = app_controller
+        self.stressModel = stress_model
+
         self.setWindowTitle("Mood Mirror")
+
         self.model   = model
         self.session = Sessions()
         self.events  = Events()
+
         self.weights = {
-            "angry": 1, "disgust": .3, "fear": .7,
-            "happy": 0, "neutral": .2, "sad": 1,
+
+            "angry": 1, 
+
+            "disgust": .3, 
+
+            "fear": .7,
+
+            "happy": 0, 
+
+            "neutral": .2, 
+
+            "sad": 1,
+
             "surprise": "no effect"
+
         }
 
         self.call_active   = False
         self.paused        = False
         self.current_frame = None
 
-        # icon target sizes
+        self.stress_history = deque(maxlen=1500) 
+        self.break_history = deque(maxlen=18000)
+        self.last_intervention_time = None
+        self.last_break_time = None
+        self.intervention_cooldown = 300 
+        self.break_cooldown = 1800
+
         self.icon_size_small = QSize(32, 32)
         self.icon_size_large = QSize(40, 40)
 
-        # ── Video display ───────────────────────────────────────
         self.video_label = QLabel(alignment=Qt.AlignCenter)
         self.video_label.setStyleSheet("""
+
             background-color: black;
             border: 2px solid #000;
             border-radius: 15px;
+
         """)
 
-        # ── Buttons ─────────────────────────────────────────────
         small_btn = QSize(60, 60)
         large_btn = QSize(80, 80)
 
@@ -473,6 +658,64 @@ class MoodMirrorWindow(QMainWindow):
             self.session.close_session(stress_reminder, self.session_id, None, stress_score)
             self._switch_to_dashboard()
 
+    def check_stress_interventions(self, current_stress_score):
+
+        current_time = datetime.now()
+        
+        self.stress_history.append(current_stress_score)
+        self.break_history.append(current_stress_score)
+        
+        if len(self.stress_history) >= 1500:
+
+            avg_stress = sum(self.stress_history) / len(self.stress_history)
+            
+            if avg_stress > 4:
+
+                if (self.last_intervention_time is None or 
+                    (current_time - self.last_intervention_time).total_seconds() > self.intervention_cooldown):
+                    self.trigger_intervention()
+                    self.last_intervention_time = current_time
+        
+        # Check for break suggestion (stress > 3 for 30 minutes)
+        if len(self.break_history) >= 18000:  # 30 minutes at 10Hz
+            avg_stress = sum(self.break_history) / len(self.break_history)
+            if avg_stress > 3:
+                # Check cooldown
+                if (self.last_break_time is None or 
+                    (current_time - self.last_break_time).total_seconds() > self.break_cooldown):
+                    self.trigger_break_suggestion()
+                    self.last_break_time = current_time
+
+    def trigger_intervention(self):
+        """Trigger an intervention notification"""
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Stress Intervention")
+        msg.setText("High stress detected!")
+        msg.setInformativeText("Consider taking a short break, deep breathing, or stretching.")
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
+        
+        # Report intervention event
+        self.events.report_event(
+            self.session_id, "intervention", "stress_reminder", weight=0.5
+        )
+
+    def trigger_break_suggestion(self):
+        """Trigger a break suggestion notification"""
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("Break Suggestion")
+        msg.setText("Extended stress detected")
+        msg.setInformativeText("You've been under stress for a while. Consider taking a longer break.")
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
+        
+        # Report break suggestion event
+        self.events.report_event(
+            self.session_id, "break_suggestion", "stress_reminder", weight=0.3
+        )
+
     def run_inference(self):
 
         if self.current_frame is None:
@@ -483,9 +726,19 @@ class MoodMirrorWindow(QMainWindow):
         print("frame_recorded")
 
         if label not in ("surprise", "no_face_detected"):
+            # Calculate current stress score
+            weight = self.weights.get(label, 0)
+            if isinstance(weight, (int, float)):
+                current_stress_score = weight * 10
+            else:
+                current_stress_score = 0
+            
+            # Check for interventions
+            self.check_stress_interventions(current_stress_score)
+            
             self.events.report_event(
                 self.session_id, label, evt,
-                weight=self.weights[label]
+                weight=weight
             )
 
     def _switch_to_dashboard(self):
@@ -495,7 +748,7 @@ class MoodMirrorWindow(QMainWindow):
                 o.setProperty("visible", False)
         dash = QQmlApplicationEngine()
         ctxt = dash.rootContext()
-        ctxt.setContextProperty("stressModel", getattr(self, "stressModel", None))
+        ctxt.setContextProperty("stressModel", self.stressModel)
         ctxt.setContextProperty("controller",   self)
         dash.load(QUrl("ui:Dashboard.qml"))
         self._dash_engine = dash
@@ -528,7 +781,7 @@ class AppController(QObject):
 
     @Slot()
     def startWorkSession(self):
-        win = MoodMirrorWindow(self.model, app_controller=self)
+        win = MoodMirrorWindow(self.model, app_controller=self, stress_model=self.stressModel)
         win.resize(800, 600)
         win.show()
         self._inference = win

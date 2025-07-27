@@ -29,12 +29,14 @@ ApplicationWindow {
                 // Time range selector
                 ComboBox {
                     id: timeRangeCombo
-                    model: ["Last 7 days", "Last 30 days", "Last 3 months", "Last 6 months", "All time"]
+                    model: ["Today", "Last 7 days", "Last 30 days", "Last 3 months", "Last 6 months", "All time"]
                     currentIndex: 0
                     Layout.alignment: Qt.AlignVCenter | Qt.AlignLeft
                     background: Rectangle { color: "#4a4a4a"; radius: 8 }
                     contentItem: Text { text: timeRangeCombo.currentText; color: "#ffffff"; font.pixelSize: 14 }
-                    onCurrentIndexChanged: stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
+                    onCurrentIndexChanged: {
+                        if (stressModel) stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
+                    }
                 }
 
                 // Spacer to center the title
@@ -60,7 +62,9 @@ ApplicationWindow {
                     Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
                     background: Rectangle { color: "#4a4a4a"; radius: 8 }
                     contentItem: Text { text: metricCombo.currentText; color: "#ffffff"; font.pixelSize: 14 }
-                    onCurrentIndexChanged: stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
+                    onCurrentIndexChanged: {
+                        if (stressModel) stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
+                    }
                 }
             }
         }
@@ -94,6 +98,7 @@ ApplicationWindow {
                         horizontalAlignment: Text.AlignHCenter
 
                         text: {
+                            if (!stressModel) return "0.0";
                             var sum = 0; for (var i = 0; i < stressModel.rowCount(); ++i) sum += stressModel.get(i).score;
                             return (sum / Math.max(1, stressModel.rowCount())).toFixed(1);
                         }
@@ -133,78 +138,153 @@ ApplicationWindow {
                         legend.visible: false
                         theme: ChartView.ChartThemeDark
 
-                        BarSeries {
+                        LineSeries {
 
-                            id: barSeries
+                            id: lineSeries
 
-                            BarSet { label: "Stress" }
+                            name: "Stress"
 
+                            color: "#00b894"
+
+                            width: 3
+
+                            useOpenGL: true
+                            
+                            axisX: xAxis
+                            axisY: yAxis
+
+                        }
+                        
+                        ScatterSeries {
+
+                            id: scatterSeries
+                            name: "Data Points"
+
+                            color: "#00b894"
+
+                            markerSize: 6
+
+                            borderColor: "#ffffff"
+
+                            borderWidth: 1
+                            
                             axisX: xAxis
                             axisY: yAxis
 
                         }
 
-                        BarCategoryAxis {
 
-                            id: xAxis
-
-                            labelsColor: "#b0b8c1"
-
-                            gridVisible: false
-
-                        }
 
                         ValueAxis {
 
-                            id: yAxis
+                            id: xAxis
 
                             min: 0
-                            max: 100
+                            max: Math.max(1, stressModel.rowCount() - 1)
+
+                            tickCount: Math.min(8, stressModel.rowCount())
 
                             labelsColor: "#b0b8c1"
                             gridLineColor: "#353b48"
 
                             gridVisible: true
                             minorTickCount: 1
+                            
+                            labelFormat: "%.0f"
+
+                        }
+                        
+
+                        ValueAxis {
+
+                            id: yAxis
+
+                            min: 0
+                            max: getMaxStressValue()
+
+                            labelsColor: "#b0b8c1"
+                            gridLineColor: "#353b48"
+
+                            gridVisible: true
+
+                            minorTickCount: 1
+
+                            labelFormat: "%.0f"
 
                         }
 
-                        VBarModelMapper {
+                        function getMaxStressValue() {
 
-                            id: barMapper
-                            model: stressModel
+                            if (!stressModel || stressModel.rowCount() === 0) {
 
-                            firstBarSetColumn: 1
-                            lastBarSetColumn: 1
+                                console.log("DEBUG: getMaxStressValue - no data, returning 10");
+                                return 10;
 
-                            firstRow: 0
+                            }
 
-                            rowCount: stressModel.rowCount()
+                            var max = 0;
 
-                            series: barSeries
+                            for (var i = 0; i < stressModel.rowCount(); ++i) {
+
+                                var score = stressModel.get(i).score;
+                                max = Math.max(max, score);
+
+                                console.log("DEBUG: getMaxStressValue - checking score:", score, "max so far:", max);
+                            
+                            }
+
+                            var result = Math.max(10, Math.ceil(max * 1.2));
+
+                            console.log("DEBUG: getMaxStressValue - final result:", result);
+                            
+                            return result;
 
                         }
 
-                        function updateCategories() {
+                        function updateLineData() {
+
+                            if (!stressModel) return;
+                            
+                            console.log("DEBUG: updateLineData called, stressModel.rowCount():", stressModel.rowCount());
+                            
+
+                            lineSeries.clear();
+                            scatterSeries.clear();
+                            
 
                             var categories = [];
 
-                            for (var i = 0; i < stressModel.rowCount(); ++i)
+                            for (var i = 0; i < stressModel.rowCount(); ++i) {
 
-                                categories.push(stressModel.get(i).date);
+                                var entry = stressModel.get(i);
 
+                                console.log("DEBUG: Entry", i, "- date:", entry.date, "score:", entry.score);
+                                categories.push(entry.date);
+                                
+                                lineSeries.append(i, entry.score);
+                                scatterSeries.append(i, entry.score);
+
+                            }
+                            
                             xAxis.categories = categories;
-
+                            
+                            // Update y-axis max
+                            yAxis.max = getMaxStressValue();
+                            
+                            console.log("DEBUG: Line series points:", lineSeries.count);
+                            console.log("DEBUG: Scatter series points:", scatterSeries.count);
                         }
+
+
 
                         Connections {
-
                             target: stressModel
-
-                            function onModelReset() { updateCategories(); }
+                            function onModelReset() { 
+                                updateLineData(); 
+                            }
                         }
                         
-                        Component.onCompleted: updateCategories()
+                        Component.onCompleted: updateLineData()
                     }
                     // Contrasting ring
                     Rectangle {
@@ -231,13 +311,15 @@ ApplicationWindow {
                             horizontalAlignment: Text.AlignHCenter
                         }
                     }
-                }
-                Text {
-                    text: "Start Today's\nWork Session"
-                    font.pixelSize: 14; color: "#b0b8c1"
-                    horizontalAlignment: Text.AlignHCenter
-                    anchors.horizontalCenter: startBtn.horizontalCenter
-                    anchors.top: startBtn.bottom; anchors.topMargin: 8
+                    
+                    // Button label
+                    Text {
+                        text: "Start Today's\nWork Session"
+                        font.pixelSize: 14; color: "#b0b8c1"
+                        horizontalAlignment: Text.AlignHCenter
+                        anchors.horizontalCenter: startBtn.horizontalCenter
+                        anchors.top: startBtn.bottom; anchors.topMargin: 8
+                    }
                 }
             }
 
@@ -253,8 +335,14 @@ ApplicationWindow {
                     Text {
                         font.pointSize: 32; color: "#e17055"; font.bold: true; horizontalAlignment: Text.AlignHCenter
                         text: {
-                            var m = 0; for (var i = 0; i < stressModel.rowCount(); ++i) m = Math.max(m, stressModel.get(i).score);
-                            return Math.round(m / 100) * 100;
+                            if (!stressModel) return "0";
+                            var maxSession = stressModel.get_max_stress_session();
+                            if (maxSession && maxSession.stress_score) {
+                                return Math.round(maxSession.stress_score);
+                            } else {
+                                var m = 0; for (var i = 0; i < stressModel.rowCount(); ++i) m = Math.max(m, stressModel.get(i).score);
+                                return Math.round(m);
+                            }
                         }
                     }
                 }
@@ -279,9 +367,15 @@ ApplicationWindow {
                 Button {
                     text: "Debug Model"
                     onClicked: {
+                        if (!stressModel) {
+                            console.log("stressModel is null");
+                            return;
+                        }
                         console.log("Row count:", stressModel.rowCount());
                         for (var i = 0; i < stressModel.rowCount(); ++i)
                             console.log("Entry", i, "date:", stressModel.get(i).date, "score:", stressModel.get(i).score);
+                        var maxSession = stressModel.get_max_stress_session();
+                        console.log("Max stress session:", maxSession);
                     }
                 }
             }

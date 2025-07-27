@@ -338,6 +338,27 @@ class Sessions():
 
         return sessions
     
+    def get_sessions_for_today(self):
+
+        """Get all sessions for today only"""
+
+        conn = self.db.get_connection()
+        today = date.today().isoformat()
+        
+        cursor = conn.cursor()
+        
+        cursor.execute(
+
+            "SELECT * FROM sessions WHERE day = ? ORDER BY start_time DESC;",
+            
+            (today,)
+        )
+        
+        sessions = cursor.fetchall()
+        conn.close()
+        
+        return sessions
+    
 
     def query_session_by_column(
             
