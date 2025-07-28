@@ -30,11 +30,12 @@ ApplicationWindow {
                 ComboBox {
                     id: timeRangeCombo
                     model: ["Today", "Last 7 days", "Last 30 days", "Last 3 months", "Last 6 months", "All time"]
-                    currentIndex: 0
+                    currentIndex: 1
                     Layout.alignment: Qt.AlignVCenter | Qt.AlignLeft
                     background: Rectangle { color: "#4a4a4a"; radius: 8 }
                     contentItem: Text { text: timeRangeCombo.currentText; color: "#ffffff"; font.pixelSize: 14 }
                     onCurrentIndexChanged: {
+                        console.log("Time range changed to:", timeRangeCombo.currentText);
                         if (stressModel) stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
                     }
                 }
@@ -63,6 +64,7 @@ ApplicationWindow {
                     background: Rectangle { color: "#4a4a4a"; radius: 8 }
                     contentItem: Text { text: metricCombo.currentText; color: "#ffffff"; font.pixelSize: 14 }
                     onCurrentIndexChanged: {
+                        console.log("Metric changed to:", metricCombo.currentText);
                         if (stressModel) stressModel.reload(timeRangeCombo.currentIndex, metricCombo.currentText)
                     }
                 }
@@ -126,165 +128,123 @@ ApplicationWindow {
                     anchors.margins: 8
 
                     ChartView {
-
+                        id: chartView
                         anchors.fill: parent
                         anchors.margins: 24
-
                         antialiasing: true
-
                         backgroundColor: "#23272e"
                         plotAreaColor: "#23272e"
-
-                        legend.visible: false
+                        legend.visible: true
+                        legend.alignment: Qt.AlignBottom
+                        legend.labelColor: "#b0b8c1"
                         theme: ChartView.ChartThemeDark
+                        
+                        title: "Stress Level Over Time"
+                        titleColor: "#ffffff"
+                        titleFont.pixelSize: 14
 
                         LineSeries {
-
                             id: lineSeries
-
-                            name: "Stress"
-
+                            name: "Stress Level"
                             color: "#00b894"
-
-                            width: 3
-
+                            width: 5
                             useOpenGL: true
-                            
                             axisX: xAxis
                             axisY: yAxis
-
                         }
                         
                         ScatterSeries {
-
                             id: scatterSeries
                             name: "Data Points"
-
                             color: "#00b894"
-
-                            markerSize: 6
-
+                            markerSize: 15
                             borderColor: "#ffffff"
-
-                            borderWidth: 1
-                            
+                            borderWidth: 4
                             axisX: xAxis
                             axisY: yAxis
-
+                            
+                            // Make points interactive with better labels
+                            pointLabelsVisible: true
+                            pointLabelsFormat: "@yPoint"
+                            pointLabelsColor: "#ffffff"
+                            pointLabelsFont.pixelSize: 14
+                            pointLabelsFont.bold: true
+                            
+                            // Add tooltip and hover effects
+                            pointLabelsClipping: false
+                            
+                            // Make points clickable for more details
+                            onClicked: {
+                                var point = scatterSeries.at(index);
+                                console.log("Clicked point:", point.x, point.y);
+                                // You could show a detailed tooltip or popup here
+                            }
                         }
 
-
-
-                        ValueAxis {
-
+                        BarCategoryAxis {
                             id: xAxis
-
-                            min: 0
-                            max: Math.max(1, stressModel.rowCount() - 1)
-
-                            tickCount: Math.min(8, stressModel.rowCount())
-
                             labelsColor: "#b0b8c1"
                             gridLineColor: "#353b48"
-
                             gridVisible: true
-                            minorTickCount: 1
-                            
-                            labelFormat: "%.0f"
-
                         }
                         
-
                         ValueAxis {
-
                             id: yAxis
-
                             min: 0
-                            max: getMaxStressValue()
-
+                            max: 10
                             labelsColor: "#b0b8c1"
                             gridLineColor: "#353b48"
-
                             gridVisible: true
-
                             minorTickCount: 1
-
-                            labelFormat: "%.0f"
-
+                            labelFormat: "%.1f"
                         }
-
-                        function getMaxStressValue() {
-
-                            if (!stressModel || stressModel.rowCount() === 0) {
-
-                                console.log("DEBUG: getMaxStressValue - no data, returning 10");
-                                return 10;
-
-                            }
-
-                            var max = 0;
-
-                            for (var i = 0; i < stressModel.rowCount(); ++i) {
-
-                                var score = stressModel.get(i).score;
-                                max = Math.max(max, score);
-
-                                console.log("DEBUG: getMaxStressValue - checking score:", score, "max so far:", max);
-                            
-                            }
-
-                            var result = Math.max(10, Math.ceil(max * 1.2));
-
-                            console.log("DEBUG: getMaxStressValue - final result:", result);
-                            
-                            return result;
-
-                        }
-
-                        function updateLineData() {
-
-                            if (!stressModel) return;
-                            
-                            console.log("DEBUG: updateLineData called, stressModel.rowCount():", stressModel.rowCount());
-                            
-
-                            lineSeries.clear();
-                            scatterSeries.clear();
-                            
-
-                            var categories = [];
-
-                            for (var i = 0; i < stressModel.rowCount(); ++i) {
-
-                                var entry = stressModel.get(i);
-
-                                console.log("DEBUG: Entry", i, "- date:", entry.date, "score:", entry.score);
-                                categories.push(entry.date);
-                                
-                                lineSeries.append(i, entry.score);
-                                scatterSeries.append(i, entry.score);
-
-                            }
-                            
-                            xAxis.categories = categories;
-                            
-                            // Update y-axis max
-                            yAxis.max = getMaxStressValue();
-                            
-                            console.log("DEBUG: Line series points:", lineSeries.count);
-                            console.log("DEBUG: Scatter series points:", scatterSeries.count);
-                        }
-
-
 
                         Connections {
                             target: stressModel
                             function onModelReset() { 
-                                updateLineData(); 
+                                chartView.updateLineData();
                             }
                         }
                         
-                        Component.onCompleted: updateLineData()
+                        Component.onCompleted: {
+                            chartView.updateLineData();
+                        }
+
+                        function getMaxStressValue() {
+                            if (!stressModel || stressModel.rowCount() === 0) {
+                                return 10;
+                            }
+                            var max = 0;
+                            for (var i = 0; i < stressModel.rowCount(); ++i) {
+                                var score = stressModel.get(i).score;
+                                max = Math.max(max, score);
+                            }
+                            return Math.max(10, Math.ceil(max * 1.2));
+                        }
+
+                        function updateLineData() {
+                            if (!stressModel) return;
+                            
+                            lineSeries.clear();
+                            scatterSeries.clear();
+                            
+                            // Build categories for x-axis
+                            var categories = [];
+                            for (var i = 0; i < stressModel.rowCount(); ++i) {
+                                var entry = stressModel.get(i);
+                                categories.push(entry.date);
+                                
+                                // Add points to line and scatter series
+                                lineSeries.append(i, entry.score);
+                                scatterSeries.append(i, entry.score);
+                            }
+                            
+                            // Update x-axis categories
+                            xAxis.categories = categories;
+                            
+                            // Update y-axis max
+                            yAxis.max = getMaxStressValue();
+                        }
                     }
                     // Contrasting ring
                     Rectangle {

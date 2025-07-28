@@ -86,10 +86,8 @@ class StressModel(QAbstractListModel):
             return None
         entry = self._entries[index.row()]
         if role == StressModel.DateRole:
-            print(f"DEBUG: data() called for row {index.row()}, DateRole returning: '{entry.date}'")
             return entry.date
         if role == StressModel.ScoreRole:
-            print(f"DEBUG: data() called for row {index.row()}, ScoreRole returning: {entry.score}")
             return entry.score
         return None
 
@@ -105,6 +103,8 @@ class StressModel(QAbstractListModel):
         days_map = [0, 7, 30, 90, 180, 10000]  # 0 = today, 10000 = all time
         self._time_range_days = days_map[time_range_index]
         self._metric = metric
+        print(f"DEBUG: Reloading data - time_range_index: {time_range_index}, days: {self._time_range_days}, metric: {metric}")
+        print(f"DEBUG: Selected time range: {['Today', 'Last 7 days', 'Last 30 days', 'Last 3 months', 'Last 6 months', 'All time'][time_range_index]}")
         self.load_from_db()
 
     def load_from_db(self):
@@ -135,7 +135,6 @@ class StressModel(QAbstractListModel):
         days = sorted(day_map.keys())
         self.beginResetModel()
         self._entries = []
-        print(f"DEBUG: Building entries for {len(days)} days")
         for d in days:
             if self._metric == "Stress score":
                 vals = day_map[d]["stress"]
@@ -152,8 +151,6 @@ class StressModel(QAbstractListModel):
                 date_str = d
             entry = StressEntry(date_str, score)
             self._entries.append(entry)
-            print(f"DEBUG: Added entry - date: '{entry.date}', score: {entry.score}")
-        print(f"DEBUG: Total entries: {len(self._entries)}")
         self.endResetModel()
 
     def load_today_events(self):
@@ -166,7 +163,6 @@ class StressModel(QAbstractListModel):
         session_ids = [s[0] for s in sessions]
         
         if not session_ids:
-
             self.beginResetModel()
             self._entries = []
             self.endResetModel()
@@ -220,34 +216,22 @@ class StressModel(QAbstractListModel):
                 hour_map[hour_key]["stress"].append(stress_score)
                 hour_map[hour_key]["reminders"] += reminders
 
-            except Exception:
+            except Exception as e:
 
                 continue
         
         # Build entries for each hour
-
         self.beginResetModel()
         self._entries = []
-
-        print(f"DEBUG: Building entries for {len(hour_map)} hours")
-
         for hour in sorted(hour_map.keys()):
-
             if self._metric == "Stress score":
-
                 vals = hour_map[hour]["stress"]
                 score = sum(vals)/len(vals) if vals else 0
-
             else:
                 score = hour_map[hour]["reminders"]
             
             entry = StressEntry(hour, score)
             self._entries.append(entry)
-
-            print(f"DEBUG: Added entry - date: '{entry.date}', score: {entry.score}")
-        
-        print(f"DEBUG: Total entries: {len(self._entries)}")
-
         self.endResetModel()
 
     @Slot(int, result='QVariant')

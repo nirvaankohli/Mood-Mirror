@@ -532,7 +532,7 @@ class Events():
 
             stress_score = weight * 10
 
-        ts = date.today().isoformat() + " " + date.today().strftime("%H:%M:%S")
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         cursor.execute(
 
